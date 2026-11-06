@@ -25,6 +25,8 @@
     </PreferenceCategory>
 
     <PreferenceCategory app:title="Front camera (road ahead)">
+        <ListPreference app:key="main_lens" app:title="Lens"
+            app:defaultValue="widest" app:useSimpleSummaryProvider="true" />
         <ListPreference app:key="main_resolution" app:title="Resolution"
             app:entries="@array/main_res_labels" app:entryValues="@array/main_res_values"
             app:defaultValue="1080" app:useSimpleSummaryProvider="true" />
@@ -79,6 +81,11 @@
             app:summary="Looks for new releases on GitHub when the app opens (never while recording)"
             app:defaultValue="true" />
         <Preference app:key="check_update" app:title="Check for updates now" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Troubleshooting">
+        <Preference app:key="share_log" app:title="Share diagnostic log"
+            app:summary="Camera and recording events from recent drives, to help track down problems" />
     </PreferenceCategory>
 
     <PreferenceCategory app:title="About">

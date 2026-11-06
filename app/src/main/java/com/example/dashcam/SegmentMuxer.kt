@@ -119,6 +119,7 @@ class SegmentMuxer(
             Storage.recordStart(ctx, clock.fileName(idx, tag), System.currentTimeMillis())
             lastError = null
             Log.i(TAG, "new segment $u")
+            EventLog.log("Clip", "$tag: new ${clock.fileName(idx, tag)} (audio track: ${aTrack >= 0})")
         } catch (e: Exception) {
             Log.e(TAG, "could not start segment", e)
             created?.let {
@@ -126,6 +127,7 @@ class SegmentMuxer(
                 try { ctx.contentResolver.delete(it, null, null) } catch (_: Exception) {}
             }
             lastError = "Can't write clip: ${e.message}"
+            EventLog.log("Clip", "$tag: could not start segment: ${e.message}")
             muxer = null; pfd = null; uri = null
             segIndex = idx // don't retry on every key frame; try again next segment
         }
@@ -133,7 +135,10 @@ class SegmentMuxer(
 
     private fun closeCurrent() {
         val m = muxer ?: return
-        try { m.stop() } catch (e: Exception) { Log.w(TAG, "muxer stop", e) }
+        try { m.stop() } catch (e: Exception) {
+            Log.w(TAG, "muxer stop", e)
+            EventLog.log("Clip", "$tag: finalising clip failed: ${e.message}")
+        }
         try { m.release() } catch (_: Exception) {}
         try { pfd?.close() } catch (_: Exception) {}
         val u = uri

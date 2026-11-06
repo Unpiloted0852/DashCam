@@ -15,7 +15,16 @@ import kotlin.math.max
  * Microphone -> AAC, encoded once and written into every clip (front and rear), so each file has
  * sound on its own. Timestamps use System.nanoTime like the video frames.
  */
-class AudioCapture(private val muxers: List<SegmentMuxer>) {
+class AudioCapture(initial: List<SegmentMuxer>) {
+    private val muxers = java.util.concurrent.CopyOnWriteArrayList(initial)
+    @Volatile private var format: MediaFormat? = null
+
+    /** Add a clip that joins mid-recording (e.g. the rear camera came up late). */
+    fun addMuxer(m: SegmentMuxer) {
+        format?.let { m.setAudioFormat(it) }
+        muxers += m
+    }
+
     @Volatile private var running = false
     private var thread: Thread? = null
     private var rec: AudioRecord? = null
@@ -97,7 +106,11 @@ class AudioCapture(private val muxers: List<SegmentMuxer>) {
         while (true) {
             val idx = c.dequeueOutputBuffer(info, 0)
             when {
-                idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> muxers.forEach { it.setAudioFormat(c.outputFormat) }
+                idx == MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
+                    val f = c.outputFormat
+                    format = f
+                    muxers.forEach { it.setAudioFormat(f) }
+                }
                 idx < 0 -> return
                 else -> {
                     val out = c.getOutputBuffer(idx)

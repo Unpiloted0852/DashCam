@@ -76,6 +76,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
     override fun onCreate() {
         super.onCreate()
         settings = DashSettings(this)
+        EventLog.init(this)
         createChannel()
         goForeground()
         PreferenceManager.getDefaultSharedPreferences(this).registerOnSharedPreferenceChangeListener(this)
@@ -119,17 +120,19 @@ class DashCamService : Service(), CameraPipeline.Listener,
 
     private fun startCameras() {
         val mgr = getSystemService(CameraManager::class.java)
-        var backId: String? = null
+        val lens = Lenses.resolve(this, settings.mainLens)
+        val backId: String? = lens?.cameraId
         var frontId: String? = null
         try {
-            for (id in mgr.cameraIdList) {
-                when (mgr.getCameraCharacteristics(id).get(CameraCharacteristics.LENS_FACING)) {
-                    CameraCharacteristics.LENS_FACING_BACK -> if (backId == null) backId = id
-                    CameraCharacteristics.LENS_FACING_FRONT -> if (frontId == null) frontId = id
-                }
+            frontId = mgr.cameraIdList.firstOrNull {
+                mgr.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
             }
-            if (Build.VERSION.SDK_INT >= 30 && backId != null && frontId != null) {
-                concurrentSupported = mgr.concurrentCameraIds.any { it.contains(backId) && it.contains(frontId) }
+            if (Build.VERSION.SDK_INT >= 30) {
+                val combos = mgr.concurrentCameraIds
+                if (backId != null && frontId != null) {
+                    concurrentSupported = combos.any { it.contains(backId) && it.contains(frontId) }
+                }
+                EventLog.log("Cam", "lens ${lens?.label} [${Lenses.lastProbe}]; concurrent pairs: ${combos.joinToString { it.sorted().toString() }}")
             }
         } catch (e: Exception) {
             Log.e(TAG, "camera enumeration", e)
@@ -138,7 +141,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         cabinGaveUp = !settings.cabinEnabled || frontId == null
         cabinOpenFailures = 0
         if (backId != null) {
-            mainCam = CameraPipeline(this, CameraPipeline.Role.MAIN, backId, settings.mainSize, this).also {
+            mainCam = CameraPipeline(this, CameraPipeline.Role.MAIN, backId, settings.mainSize, this, lens?.zoom).also {
                 configure(it); it.start(); previewMain?.let { p -> it.setPreview(p.surface, p.w, p.h) }
             }
         } else {
@@ -157,6 +160,10 @@ class DashCamService : Service(), CameraPipeline.Listener,
         } ?: return
         cabinCam = CameraPipeline(this, CameraPipeline.Role.CABIN, frontId, settings.cabinSize, this).also {
             configure(it); it.start(); previewCabin?.let { p -> it.setPreview(p.surface, p.w, p.h) }
+            EventLog.log("Cam", "rear camera $frontId starting (concurrent pair listed: $concurrentSupported)")
+            // Recording may already be running (auto-start, or the rear camera came back later):
+            // the rear camera joins it instead of being left out of the whole drive.
+            if (recording) joinRecording(it)
         }
         if (concurrentSupported == false) {
             warning = "This phone doesn't list front+back as a supported pair; trying anyway"
@@ -185,6 +192,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
 
     override fun onCameraStarted(p: CameraPipeline) {
         ui.post {
+            EventLog.log("Cam", "${p.role.label} streaming ${p.size.width}x${p.size.height}, focus ${p.focusStatus}")
             if (p === cabinCam) cabinOpenFailures = 0
             if (warning?.contains("will resume automatically") == true &&
                 listOfNotNull(mainCam, cabinCam).all { it.cameraOpen }) warning = null
@@ -197,6 +205,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
     override fun onCameraLost(p: CameraPipeline, reason: String, kind: CameraPipeline.Loss) {
         ui.post {
             Log.w(TAG, "${p.role.label} camera lost: $reason ($kind)")
+            EventLog.log("Cam", "${p.role.label} lost: $reason ($kind), recording=${p.isRecording}")
             val now = SystemClock.elapsedRealtime()
             val c = cabinCam
             when {
@@ -226,6 +235,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
     private var cabinOpenFailures = 0
 
     private fun giveUpOnCabin(msg: String) {
+        EventLog.log("Cam", "giving up on rear camera: $msg")
         cabinGaveUp = true
         warning = msg
         val c = cabinCam; cabinCam = null
@@ -250,6 +260,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         override fun onCameraAvailable(cameraId: String) {
             listOfNotNull(mainCam, cabinCam).firstOrNull { it.cameraId == cameraId && !it.cameraOpen }?.let {
                 Log.i(TAG, "${it.role.label} camera free again — reopening")
+                EventLog.log("Cam", "${it.role.label} free again — reopening")
                 it.reopen()
             }
         }
@@ -280,6 +291,8 @@ class DashCamService : Service(), CameraPipeline.Listener,
         val volumeNote = if (recVolume != settings.storageVolume)
             "Chosen storage isn't available (SD card removed?) — saving to internal storage" else null
         val wantAudio = settings.audioEnabled && hasPerm(Manifest.permission.RECORD_AUDIO)
+        recClock = clock
+        recWantAudio = wantAudio
         val muxers = ArrayList<SegmentMuxer>()
         val errors = ArrayList<String>()
         for (cam in cams) {
@@ -287,6 +300,8 @@ class DashCamService : Service(), CameraPipeline.Listener,
             val err = cam.startRecording(m, clock, settings.bitrateFor(cam.size))
             if (err == null) muxers += m else errors += err
         }
+        EventLog.log("Rec", "start: ${cams.joinToString { it.role.label + if (it.isRecording) " ok" else " FAILED" }}" +
+            (if (errors.isEmpty()) "" else " — ${errors.joinToString("; ")}"))
         if (muxers.isEmpty()) {
             warning = errors.joinToString("\n"); changed(); return
         }
@@ -311,8 +326,27 @@ class DashCamService : Service(), CameraPipeline.Listener,
         changed()
     }
 
+    /** Start recording on a camera that came up after recording began. */
+    private fun joinRecording(cam: CameraPipeline) {
+        val clock = recClock ?: return
+        if (cam.isRecording) return
+        val m = SegmentMuxer(this, cam.role.tag, recVolume, recWantAudio && audio != null, clock, ::onSegmentClosed)
+        val err = cam.startRecording(m, clock, settings.bitrateFor(cam.size))
+        if (err == null) {
+            audio?.addMuxer(m)
+            EventLog.log("Rec", "${cam.role.label} joined the recording")
+        } else {
+            warning = err
+            EventLog.log("Rec", "${cam.role.label} could not join: $err")
+        }
+    }
+
+    private var recClock: SegmentClock? = null
+    private var recWantAudio = false
+
     fun stopRecording() {
         if (!recording) return
+        EventLog.log("Rec", "stop")
         ui.removeCallbacks(autoStopCheck)
         autoStopRemainingMs = null
         recording = false
@@ -380,6 +414,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
                 autoStopRemainingMs = left.coerceAtLeast(0)
                 if (left <= 0) {
                     Log.i(TAG, "auto-stop after ${limit / 60000} min parked")
+                    EventLog.log("Rec", "auto-stop after ${limit / 60000} min parked")
                     toast = "Parked for ${limit / 60000} min — recording stopped"
                     notifyAutoStopped(limit)
                     stopRecording()

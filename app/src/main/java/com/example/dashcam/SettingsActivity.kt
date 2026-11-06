@@ -35,6 +35,14 @@ class SettingsActivity : AppCompatActivity() {
     class Fragment : PreferenceFragmentCompat() {
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             setPreferencesFromResource(R.xml.preferences, rootKey)
+            findPreference<ListPreference>("main_lens")?.let { pref ->
+                val lenses = Lenses.backLenses(requireContext())
+                val widest = lenses.minByOrNull { it.relative }
+                pref.entries = (listOf("Widest available" + (widest?.let { " — now ${it.label}" } ?: "")) +
+                    lenses.map { it.label }).toTypedArray()
+                pref.entryValues = (listOf("widest") + lenses.map { it.key }).toTypedArray()
+                if (pref.value !in pref.entryValues.map { it.toString() }) pref.value = "widest"
+            }
             findPreference<ListPreference>("storage_volume")?.let { pref ->
                 val vols = Storage.volumes(requireContext())
                 pref.entries = vols.map { it.label }.toTypedArray()
@@ -48,6 +56,17 @@ class SettingsActivity : AppCompatActivity() {
             findPreference<Preference>("check_update")?.apply {
                 summary = "Installed: v${BuildConfig.VERSION_NAME} · github.com/${BuildConfig.UPDATE_REPO}"
                 setOnPreferenceClickListener { Updater.checkNow(requireActivity()); true }
+            }
+            findPreference<Preference>("share_log")?.setOnPreferenceClickListener {
+                EventLog.init(requireContext())
+                val text = EventLog.read().takeLast(200_000).ifEmpty { "(log is empty)" }
+                startActivity(android.content.Intent.createChooser(
+                    android.content.Intent(android.content.Intent.ACTION_SEND)
+                        .setType("text/plain")
+                        .putExtra(android.content.Intent.EXTRA_SUBJECT, "DashCam diagnostic log")
+                        .putExtra(android.content.Intent.EXTRA_TEXT, text),
+                    "Share diagnostic log"))
+                true
             }
             findPreference<androidx.preference.Preference>("battery_opt")?.setOnPreferenceClickListener {
                 BatteryHelper.request(requireActivity()); true

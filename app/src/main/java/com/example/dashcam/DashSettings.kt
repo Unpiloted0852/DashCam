@@ -13,6 +13,8 @@ class DashSettings(ctx: Context) {
 
     val segmentMs: Long get() = str("segment_minutes", "3").toLong() * 60_000L
     val storageLimitBytes: Long get() = str("storage_limit_gb", "16").toLong() * 1024L * 1024L * 1024L
+    /** Road-camera lens: "widest" (default), "main", or a key from Lenses.backLenses. */
+    val mainLens: String get() = str("main_lens", "widest")
     val mainSize: Size get() = sizeFor(str("main_resolution", "1080"))
     val cabinEnabled: Boolean get() = bool("cabin_enabled", true)
     val cabinSize: Size get() = sizeFor(str("cabin_resolution", "720"))
@@ -50,7 +52,7 @@ class DashSettings(ctx: Context) {
     companion object {
         /** Changing these needs the cameras to be reopened. */
         const val STOP_SPEED_MPS = 1.0f  // ~2 mph: GPS jitter while parked stays below this
-        val RESTART_KEYS = setOf("main_resolution", "cabin_resolution", "cabin_enabled")
+        val RESTART_KEYS = setOf("main_lens", "main_resolution", "cabin_resolution", "cabin_enabled")
     }
 }
 

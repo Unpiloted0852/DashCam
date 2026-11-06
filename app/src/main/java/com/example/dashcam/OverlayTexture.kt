@@ -46,19 +46,34 @@ class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: Frame
     private val bar = Paint().apply { color = 0x80000000.toInt() }
     private val pad = lineH * 0.3f
 
+    private var layoutKey: Any? = null
+    private var scaleX = 1f
+    private var barW = 0f
+
+    /**
+     * Size the stamp once from the widest possible text for these options, so the bar and the
+     * text size stay put second to second instead of growing and shrinking with the data.
+     */
+    private fun layoutFor(o: OverlayOptions) {
+        if (layoutKey == o) return
+        layoutKey = o
+        fill.textScaleX = 1f
+        val template = Telemetry.overlayTemplate(o, portrait).take(lineCount)
+        val widest = template.maxOf { fill.measureText(it) }
+        val avail = bmp.width - 2 * pad
+        scaleX = if (widest > avail) avail / widest else 1f
+        barW = widest * scaleX + 2 * pad
+    }
+
     fun update(o: OverlayOptions) {
         val key = "${System.currentTimeMillis() / 1000}|${Telemetry.version}|${o.hashCode()}"
         if (key == lastKey) return
         lastKey = key
+        layoutFor(o)
         val lines = Telemetry.overlayLines(o, portrait).take(lineCount)
 
         bmp.eraseColor(Color.TRANSPARENT)
-        // Squeeze horizontally if a line would run off the frame.
-        val avail = bmp.width - 2 * pad
-        val widest = lines.maxOf { fill.measureText(it) }
-        val scaleX = if (widest > avail) avail / widest else 1f
         fill.textScaleX = scaleX; stroke.textScaleX = scaleX
-        val barW = widest * scaleX + 2 * pad
         val top = (lineCount - lines.size) * lineH   // keep text hugging the bottom edge
         canvas.drawRoundRect(RectF(0f, top, barW, bmpH.toFloat()), pad, pad, bar)
         lines.forEachIndexed { i, l ->

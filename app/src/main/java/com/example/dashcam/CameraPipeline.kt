@@ -19,6 +19,7 @@ import android.media.MediaFormat
 import android.opengl.EGLSurface
 import android.opengl.GLES20
 import android.opengl.Matrix
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.HandlerThread
@@ -42,6 +43,8 @@ class CameraPipeline(
     val cameraId: String,
     requestedSize: Size,
     private val listener: Listener,
+    /** Zoom ratio for lenses reached by zooming the main camera (e.g. 0.5x); null = 1x. */
+    private val zoomRatio: Float? = null,
 ) : SurfaceTexture.OnFrameAvailableListener {
 
     enum class Role(val tag: String, val label: String) {
@@ -332,6 +335,7 @@ class CameraPipeline(
                 lastSyncIdx = c.indexNow()
             } catch (ex: Exception) {
                 Log.e(TAG, "encoder start failed", ex)
+                EventLog.log("Enc", "${role.label} encoder start failed: ${ex.message}")
                 err = "${role.label} encoder failed: ${ex.message}"
             }
         }
@@ -378,6 +382,7 @@ class CameraPipeline(
         override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) = m.setVideoFormat(format)
         override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
             Log.e(TAG, "encoder error", e); eos.countDown()
+            EventLog.log("Enc", "encoder error: ${e.diagnosticInfo}")
         }
         override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
             try {
@@ -488,6 +493,7 @@ class CameraPipeline(
             b.addTarget(target)
             b.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
             fpsRange?.let { b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+            if (zoomRatio != null && Build.VERSION.SDK_INT >= 30) b.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoomRatio)
             val f = focus
             focusStatus = when {
                 minFocusDiopters == 0f -> "fixed-focus lens"

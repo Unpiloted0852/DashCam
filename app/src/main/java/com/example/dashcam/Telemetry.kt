@@ -89,6 +89,15 @@ object Telemetry {
     fun mph(mps: Float) = mps * 2.2369363f
     fun kph(mps: Float) = mps * 3.6f
 
+    /** Baro altitude (METAR-corrected) in feet if the phone has a barometer, else GPS altitude. */
+    fun altitudeFeet(): Float? {
+        Altimeter.altitudeFt()?.let { return it }
+        val f = freshFix() ?: return null
+        if (!f.hasAltitude()) return null
+        val m = if (android.os.Build.VERSION.SDK_INT >= 34 && f.hasMslAltitude()) f.mslAltitudeMeters else f.altitude
+        return (m * 3.28084).toFloat()
+    }
+
     /** Baro altitude (METAR-corrected) if the phone has a barometer, else GPS altitude. */
     fun altitudeText(): String? {
         Altimeter.altitudeFt()?.let { return "alt ${it.roundToInt()}ft" }
@@ -103,8 +112,40 @@ object Telemetry {
         return names[(((deg % 360f) + 360f) % 360f / 22.5f).roundToInt() % 16]
     }
 
+    /** Values shown on the stamp. A null field means "unknown" and is drawn as dashes. */
+    class Sample(
+        val lat: Double?, val lon: Double?, val accM: Int?,
+        val mps: Float?, val bearing: Float?, val altFt: Int?,
+        val satsUsed: Int, val satsVisible: Int,
+    )
+
+    private fun currentSample(): Sample {
+        val fix = freshFix()
+        val mps = speedMps()
+        return Sample(
+            lat = fix?.latitude, lon = fix?.longitude,
+            accM = fix?.takeIf { it.hasAccuracy() }?.accuracy?.roundToInt(),
+            mps = mps,
+            bearing = fix?.takeIf { it.hasBearing() && (mps ?: 0f) > 1f }?.bearing,
+            altFt = altitudeFeet()?.roundToInt(),
+            satsUsed = satsUsed, satsVisible = satsVisible,
+        )
+    }
+
+    /** Widest possible values, used once to size the stamp so it never changes shape. */
+    private val WIDEST = Sample(-89.999999, -179.999999, 999, 99f, 359f, -9999, 99, 99)
+
     /** Lines burned into the video: 2 for landscape frames, 3 for narrow portrait frames. */
-    fun overlayLines(o: OverlayOptions, portrait: Boolean): List<String> {
+    fun overlayLines(o: OverlayOptions, portrait: Boolean): List<String> = format(o, portrait, currentSample())
+
+    /** Same layout filled with the widest possible values. */
+    fun overlayTemplate(o: OverlayOptions, portrait: Boolean): List<String> = format(o, portrait, WIDEST)
+
+    /**
+     * Every field has a fixed width (monospace font), so the text never shifts or changes length
+     * from one second to the next, with or without a GPS fix.
+     */
+    private fun format(o: OverlayOptions, portrait: Boolean, v: Sample): List<String> {
         val fmt = SimpleDateFormat("yyyy-MM-dd  HH:mm:ss z", Locale.US).apply {
             timeZone = if (o.utc) TimeZone.getTimeZone("UTC") else TimeZone.getDefault()
         }
@@ -113,33 +154,32 @@ object Telemetry {
             append("   ").append(o.camLabel)
             if (o.userText.isNotEmpty()) append("   ").append(o.userText)
         }
-        val fix = freshFix()
-        if (fix == null) {
-            val nofix = "GPS: no fix ($satsUsed/$satsVisible sats)"
-            val spd = "--- mph  --- km/h"
-            return if (portrait) listOf(line1, nofix, spd) else listOf(line1, "$nofix   $spd")
-        }
-        val coords = if (!o.showCoords) "" else buildString {
-            append(String.format(Locale.US, "%.6f°%s %.6f°%s",
-                abs(fix.latitude), if (fix.latitude >= 0) "N" else "S",
-                abs(fix.longitude), if (fix.longitude >= 0) "E" else "W"))
-            if (fix.hasAccuracy()) append(" ±").append(fix.accuracy.roundToInt()).append("m")
+        val coords = if (!o.showCoords) "" else {
+            val lat = v.lat?.let { String.format(Locale.US, "%9.6f°%s", abs(it), if (it >= 0) "N" else "S") }
+                ?: "--.------° "
+            val lon = v.lon?.let { String.format(Locale.US, "%10.6f°%s", abs(it), if (it >= 0) "E" else "W") }
+                ?: "---.------° "
+            val acc = v.accM?.let { "±${it.coerceAtMost(999)}m".padEnd(6) } ?: "±---m "
+            val full = "$lat $lon $acc"
+            // Same width as a real position, so the stamp keeps its shape when the fix drops.
+            if (v.lat == null) "no GPS fix (${v.satsUsed}/${v.satsVisible} sats)".padEnd(full.length).take(full.length) else full
         }
         val motion = buildString {
-            val mps = speedMps()
-            if (mps != null) {
-                append(String.format(Locale.US, "%3d mph  %3d km/h", mph(mps).roundToInt(), kph(mps).roundToInt()))
-            } else append("--- mph  --- km/h")
-            if (fix.hasBearing() && (mps ?: 0f) > 1f) {
-                append("   ").append(cardinal(fix.bearing)).append(' ').append(fix.bearing.roundToInt()).append('°')
-            }
-            altitudeText()?.let { append("   ").append(it) }
-            append("   ").append(satsUsed).append(" sats")
+            if (v.mps != null) {
+                append(String.format(Locale.US, "%3d mph %3d km/h",
+                    mph(v.mps).roundToInt().coerceAtMost(999), kph(v.mps).roundToInt().coerceAtMost(999)))
+            } else append("--- mph --- km/h")
+            append("  ")
+            append(v.bearing?.let { String.format(Locale.US, "%-3s %3d°", cardinal(it), it.roundToInt() % 360) } ?: "        ")
+            append("  ")
+            append(v.altFt?.let { String.format(Locale.US, "alt %5dft", it.coerceIn(-9999, 99999)) } ?: "alt -----ft")
+            append("  ")
+            append(String.format(Locale.US, "%2d sats", v.satsUsed.coerceAtMost(99)))
         }
         return when {
             coords.isEmpty() -> listOf(line1, motion)
             portrait -> listOf(line1, coords, motion)
-            else -> listOf(line1, "$coords   $motion")
+            else -> listOf(line1, "$coords  $motion")
         }
     }
 }
