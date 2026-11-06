@@ -81,23 +81,6 @@ object Altimeter : SensorEventListener {
         String.format(Locale.US, "%s %.2f", it.station, it.altimHpa / 33.8639f)
     } ?: "std 29.92"
 
-    /** e.g. "KNYC 29.87 inHg · 12 km away · report 23 min old" for the main screen. */
-    fun describe(): String {
-        val m = metar ?: return "no METAR yet — using standard 29.92"
-        val ageMin = if (m.obsEpochSec > 0) (TrueTime.nowMs() / 1000 - m.obsEpochSec) / 60 else -1
-        val here = Telemetry.location
-        val dist = here?.let {
-            val d = FloatArray(1)
-            Location.distanceBetween(it.latitude, it.longitude, m.lat, m.lon, d); d[0] / 1000f
-        }
-        return buildString {
-            append(String.format(Locale.US, "%s %.2f", m.station, m.altimHpa / 33.8639f))
-            dist?.let { append(String.format(Locale.US, " · %.0f km", it)) }
-            if (ageMin >= 0) append(" · ${ageMin} min old")
-            if (ageMin > 90) append(" (stale)")
-        }
-    }
-
     private fun maybeFetch() {
         try {
             val loc = Telemetry.location ?: return

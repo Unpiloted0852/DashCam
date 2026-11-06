@@ -54,19 +54,6 @@ object TrueTime {
     /** How far the phone's own clock is off, in ms (positive = phone is behind). */
     fun phoneClockErrorMs(): Long = nowMs() - System.currentTimeMillis()
 
-    fun describe(): String {
-        if (anchorTrueMs == null) return "Clock: phone (not yet synced)"
-        val age = (SystemClock.elapsedRealtime() - lastSyncElapsed) / 60_000
-        val unc = if (uncertaintyMs >= 0) " ±${uncertaintyMs} ms" else ""
-        val src = if (source.startsWith("NTP")) "NTP" else source
-        val err = phoneClockErrorMs()
-        // err = true - phone; positive means the phone is behind (slow).
-        val dir = if (err > 0) "slow" else "fast"
-        val phone = if (abs(err) >= 1000) String.format(Locale.US, " · phone %.1f s %s", abs(err) / 1000.0, dir)
-                    else " · phone ${abs(err)} ms $dir"
-        return "Clock: $src$unc$phone" + if (age >= 2) " · $age min ago" else ""
-    }
-
     @Volatile private var lastSyncElapsed = 0L
 
     private fun syncIfDue() {

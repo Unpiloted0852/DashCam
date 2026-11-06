@@ -263,9 +263,8 @@ class MainActivity : AppCompatActivity() {
             "GPS ±${fix.accuracy.roundToInt()} m · ${Telemetry.satsUsed} sats"
         else "GPS: searching (${Telemetry.satsUsed}/${Telemetry.satsVisible})"
         val alt = Altimeter.altitudeFt()
-        if (alt != null) gpsStatus.text = "${gpsStatus.text}\nAlt ${alt.roundToInt()} ft · ${Altimeter.describe()}"
+        if (alt != null) gpsStatus.text = "${gpsStatus.text}\nAlt ${alt.roundToInt()} ft"
         else Telemetry.altitudeText()?.let { gpsStatus.text = "${gpsStatus.text}\n${it.replaceFirstChar { c -> c.uppercase() }}" }
-        gpsStatus.text = "${gpsStatus.text}\n${TrueTime.describe()}"
 
         val s = service
         if (s != null && s.recording) {

@@ -14,7 +14,7 @@ Android dashcam that records the road (main/rear-facing camera) and the cabin/re
   capture time, independent of the phone's own clock.
 - **Altitude:** barometric, from the phone's pressure sensor, corrected with the altimeter setting
   (QNH) of the nearest METAR (aviationweather.gov; newest report per station, refreshed every
-  15 min or after 25 km, reports over 3 h old skipped). Station, distance and report age are shown on screen.
+  15 min or after 25 km, reports over 3 h old skipped). Station changes go to the diagnostic log.
   Uses 29.92 until a METAR arrives; uses GPS altitude ("gps alt") if the phone has no barometer.
 - **Lens choice** for the road camera (default: widest, e.g. the ultra-wide), including lenses some
   phones hide from apps.
