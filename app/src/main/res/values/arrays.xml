@@ -1,0 +1,16 @@
+<resources>
+    <string-array name="segment_labels"><item>1 minute</item><item>2 minutes</item><item>3 minutes</item><item>5 minutes</item><item>10 minutes</item></string-array>
+    <string-array name="segment_values"><item>1</item><item>2</item><item>3</item><item>5</item><item>10</item></string-array>
+    <string-array name="storage_labels"><item>2 GB</item><item>4 GB</item><item>8 GB</item><item>16 GB</item><item>32 GB</item><item>64 GB</item><item>128 GB</item></string-array>
+    <string-array name="storage_values"><item>2</item><item>4</item><item>8</item><item>16</item><item>32</item><item>64</item><item>128</item></string-array>
+    <string-array name="main_res_labels"><item>720p</item><item>1080p</item><item>4K (may not work with both cameras)</item></string-array>
+    <string-array name="main_res_values"><item>720</item><item>1080</item><item>2160</item></string-array>
+    <string-array name="cabin_res_labels"><item>480p</item><item>720p</item><item>1080p</item></string-array>
+    <string-array name="cabin_res_values"><item>480</item><item>720</item><item>1080</item></string-array>
+    <string-array name="quality_labels"><item>Low (smaller files)</item><item>Normal</item><item>High</item></string-array>
+    <string-array name="quality_values"><item>0.10</item><item>0.15</item><item>0.25</item></string-array>
+    <string-array name="focus_labels"><item>Infinity</item><item>Hyperfocal (sharp from a few metres to infinity)</item><item>20 m</item><item>10 m</item><item>5 m</item></string-array>
+    <string-array name="focus_values"><item>inf</item><item>hyper</item><item>20</item><item>10</item><item>5</item></string-array>
+    <string-array name="autostop_labels"><item>Off</item><item>After 2 min at 0 mph</item><item>After 5 min at 0 mph</item><item>After 10 min at 0 mph</item><item>After 15 min at 0 mph</item><item>After 30 min at 0 mph</item></string-array>
+    <string-array name="autostop_values"><item>0</item><item>2</item><item>5</item><item>10</item><item>15</item><item>30</item></string-array>
+</resources>

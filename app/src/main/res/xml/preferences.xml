@@ -1,0 +1,88 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <PreferenceCategory app:title="Recording">
+        <ListPreference app:key="segment_minutes" app:title="Clip length"
+            app:entries="@array/segment_labels" app:entryValues="@array/segment_values"
+            app:defaultValue="3" app:useSimpleSummaryProvider="true" />
+        <ListPreference app:key="storage_volume" app:title="Save clips to"
+            app:defaultValue="external_primary" app:useSimpleSummaryProvider="true" />
+        <ListPreference app:key="storage_limit_gb" app:title="Loop recording limit"
+            app:entries="@array/storage_labels" app:entryValues="@array/storage_values"
+            app:defaultValue="16" app:useSimpleSummaryProvider="true" />
+        <ListPreference app:key="quality" app:title="Video quality"
+            app:entries="@array/quality_labels" app:entryValues="@array/quality_values"
+            app:defaultValue="0.15" app:useSimpleSummaryProvider="true" />
+        <SwitchPreferenceCompat app:key="audio_enabled" app:title="Record audio"
+            app:summary="Cabin sound, saved into both the front and rear clips" app:defaultValue="true" />
+        <SwitchPreferenceCompat app:key="auto_record" app:title="Start recording when the app opens"
+            app:summary="Every time the app is opened or brought to the front" app:defaultValue="false" />
+        <ListPreference app:key="auto_stop_minutes" app:title="Auto-stop when parked"
+            app:entries="@array/autostop_labels" app:entryValues="@array/autostop_values"
+            app:defaultValue="0" />
+        <SwitchPreferenceCompat app:key="keep_screen_on" app:title="Keep screen on"
+            app:defaultValue="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Front camera (road ahead)">
+        <ListPreference app:key="main_resolution" app:title="Resolution"
+            app:entries="@array/main_res_labels" app:entryValues="@array/main_res_values"
+            app:defaultValue="1080" app:useSimpleSummaryProvider="true" />
+        <SwitchPreferenceCompat app:key="main_far_focus" app:title="Force far focus"
+            app:summary="Lock the lens far away so it never focuses on the dash or windshield"
+            app:defaultValue="true" />
+        <ListPreference app:key="main_focus_target" app:title="Far focus distance"
+            app:dependency="main_far_focus"
+            app:entries="@array/focus_labels" app:entryValues="@array/focus_values"
+            app:defaultValue="inf" app:useSimpleSummaryProvider="true" />
+        <SwitchPreferenceCompat app:key="main_rotate180" app:title="Rotate 180°"
+            app:summary="Use if the video comes out upside down" app:defaultValue="false" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Rear camera (selfie camera)">
+        <SwitchPreferenceCompat app:key="cabin_enabled" app:title="Record rear camera too"
+            app:summary="Needs a phone that can run both cameras at once" app:defaultValue="true" />
+        <ListPreference app:key="cabin_resolution" app:title="Resolution"
+            app:dependency="cabin_enabled"
+            app:entries="@array/cabin_res_labels" app:entryValues="@array/cabin_res_values"
+            app:defaultValue="720" app:useSimpleSummaryProvider="true" />
+        <SwitchPreferenceCompat app:key="cabin_far_focus" app:title="Force far focus"
+            app:dependency="cabin_enabled"
+            app:summary="Focus through the rear window instead of on the cabin" app:defaultValue="false" />
+        <ListPreference app:key="cabin_focus_target" app:title="Far focus distance"
+            app:dependency="cabin_far_focus"
+            app:entries="@array/focus_labels" app:entryValues="@array/focus_values"
+            app:defaultValue="inf" app:useSimpleSummaryProvider="true" />
+        <SwitchPreferenceCompat app:key="cabin_mirror" app:title="Mirror image"
+            app:dependency="cabin_enabled"
+            app:summary="Flip left/right like a rear-view mirror (plates read backwards)" app:defaultValue="false" />
+        <SwitchPreferenceCompat app:key="cabin_rotate180" app:title="Rotate 180°"
+            app:dependency="cabin_enabled" app:defaultValue="false" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Video stamp">
+        <SwitchPreferenceCompat app:key="show_coords" app:title="Show GPS coordinates"
+            app:defaultValue="true" />
+        <SwitchPreferenceCompat app:key="use_utc" app:title="Use UTC time"
+            app:summary="Off = local time zone" app:defaultValue="false" />
+        <EditTextPreference app:key="overlay_label" app:title="Extra text"
+            app:summary="e.g. your plate number or name" app:defaultValue="" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Background recording">
+        <Preference app:key="battery_opt" app:title="Allow unrestricted battery use"
+            app:summary="Stops Android from pausing recording when the screen is off or another app (e.g. navigation) is in front" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="Updates">
+        <SwitchPreferenceCompat app:key="auto_update_check" app:title="Check for updates automatically"
+            app:summary="Looks for new releases on GitHub when the app opens (never while recording)"
+            app:defaultValue="true" />
+        <Preference app:key="check_update" app:title="Check for updates now" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="About">
+        <Preference app:key="info" app:selectable="false" app:title="Where clips go"
+            app:summary="Movies/DashCam (oldest deleted when the limit is reached). Locked clips go to Movies/DashCam/Locked and are never deleted. Clips made by an earlier install can't be auto-deleted after reinstalling." />
+    </PreferenceCategory>
+</PreferenceScreen>
