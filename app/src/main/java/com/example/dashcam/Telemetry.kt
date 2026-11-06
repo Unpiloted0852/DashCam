@@ -34,6 +34,7 @@ object Telemetry {
 
     private val listener = LocationListener { loc ->
         location = loc
+        TrueTime.onGpsFix(loc)
         version++
     }
 
@@ -136,21 +137,22 @@ object Telemetry {
     private val WIDEST = Sample(-89.999999, -179.999999, 999, 99f, 359f, -9999, 99, 99)
 
     /** Lines burned into the video: 2 for landscape frames, 3 for narrow portrait frames. */
-    fun overlayLines(o: OverlayOptions, portrait: Boolean): List<String> = format(o, portrait, currentSample())
+    fun overlayLines(o: OverlayOptions, portrait: Boolean, wallMs: Long = TrueTime.nowMs()): List<String> =
+        format(o, portrait, currentSample(), wallMs)
 
     /** Same layout filled with the widest possible values. */
-    fun overlayTemplate(o: OverlayOptions, portrait: Boolean): List<String> = format(o, portrait, WIDEST)
+    fun overlayTemplate(o: OverlayOptions, portrait: Boolean): List<String> = format(o, portrait, WIDEST, TrueTime.nowMs())
 
     /**
      * Every field has a fixed width (monospace font), so the text never shifts or changes length
      * from one second to the next, with or without a GPS fix.
      */
-    private fun format(o: OverlayOptions, portrait: Boolean, v: Sample): List<String> {
+    private fun format(o: OverlayOptions, portrait: Boolean, v: Sample, wallMs: Long): List<String> {
         val fmt = SimpleDateFormat("yyyy-MM-dd  HH:mm:ss z", Locale.US).apply {
             timeZone = if (o.utc) TimeZone.getTimeZone("UTC") else TimeZone.getDefault()
         }
         val line1 = buildString {
-            append(fmt.format(Date()))
+            append(fmt.format(Date(wallMs)))
             append("   ").append(o.camLabel)
             if (o.userText.isNotEmpty()) append("   ").append(o.userText)
         }

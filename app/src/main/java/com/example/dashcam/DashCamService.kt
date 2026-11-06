@@ -82,6 +82,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         PreferenceManager.getDefaultSharedPreferences(this).registerOnSharedPreferenceChangeListener(this)
         Telemetry.start(this)
         Altimeter.start(this)
+        TrueTime.start()
         getSystemService(CameraManager::class.java).registerAvailabilityCallback(availability, ui)
         startCameras()
     }
@@ -111,6 +112,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         stopCameras()
         Telemetry.stop()
         Altimeter.stop()
+        TrueTime.stop()
         releaseWakeLock()
         worker.shutdown()
         super.onDestroy()
@@ -286,7 +288,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         if (recording || stopping) return
         val cams = listOfNotNull(mainCam, cabinCam)
         if (cams.isEmpty()) { warning = "No camera available"; changed(); return }
-        val clock = SegmentClock(System.currentTimeMillis(), settings.segmentMs)
+        val clock = SegmentClock(TrueTime.nowMs(), settings.segmentMs)
         recVolume = Storage.resolveVolume(this, settings.storageVolume)
         val volumeNote = if (recVolume != settings.storageVolume)
             "Chosen storage isn't available (SD card removed?) — saving to internal storage" else null

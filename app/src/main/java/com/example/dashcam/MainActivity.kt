@@ -188,6 +188,8 @@ class MainActivity : AppCompatActivity() {
         // Keep the warning clear of the rear-camera thumbnail in portrait.
         val widthDp = resources.configuration.screenWidthDp
         warning.maxWidth = dp(if (portrait) (widthDp - 113 - 48).coerceAtLeast(160) else 380)
+        gpsStatus.maxWidth = warning.maxWidth
+        focusStatus.maxWidth = warning.maxWidth
     }
 
     private fun requestPermissions() {
@@ -261,8 +263,9 @@ class MainActivity : AppCompatActivity() {
             "GPS ±${fix.accuracy.roundToInt()} m · ${Telemetry.satsUsed} sats"
         else "GPS: searching (${Telemetry.satsUsed}/${Telemetry.satsVisible})"
         val alt = Altimeter.altitudeFt()
-        if (alt != null) gpsStatus.text = "${gpsStatus.text}\nAlt ${alt.roundToInt()} ft (baro, ${Altimeter.sourceLabel()})"
+        if (alt != null) gpsStatus.text = "${gpsStatus.text}\nAlt ${alt.roundToInt()} ft · ${Altimeter.describe()}"
         else Telemetry.altitudeText()?.let { gpsStatus.text = "${gpsStatus.text}\n${it.replaceFirstChar { c -> c.uppercase() }}" }
+        gpsStatus.text = "${gpsStatus.text}\n${TrueTime.describe()}"
 
         val s = service
         if (s != null && s.recording) {

@@ -65,12 +65,13 @@ class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: Frame
         barW = widest * scaleX + 2 * pad
     }
 
-    fun update(o: OverlayOptions) {
-        val key = "${System.currentTimeMillis() / 1000}|${Telemetry.version}|${o.hashCode()}"
+    /** [frameWallMs]: accurate wall time at which the frame was captured. */
+    fun update(o: OverlayOptions, frameWallMs: Long) {
+        val key = "${frameWallMs / 1000}|${Telemetry.version}|${o.hashCode()}"
         if (key == lastKey) return
         lastKey = key
         layoutFor(o)
-        val lines = Telemetry.overlayLines(o, portrait).take(lineCount)
+        val lines = Telemetry.overlayLines(o, portrait, frameWallMs).take(lineCount)
 
         bmp.eraseColor(Color.TRANSPARENT)
         fill.textScaleX = scaleX; stroke.textScaleX = scaleX

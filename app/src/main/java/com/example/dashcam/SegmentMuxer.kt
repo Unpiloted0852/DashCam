@@ -15,7 +15,7 @@ import java.util.Locale
 
 /** Shared segment timeline so front and rear clips get identical names and boundaries. */
 class SegmentClock(private val startMs: Long, private val lengthMs: Long) {
-    fun indexNow(): Long = (System.currentTimeMillis() - startMs).coerceAtLeast(0) / lengthMs
+    fun indexNow(): Long = (TrueTime.nowMs() - startMs).coerceAtLeast(0) / lengthMs
     fun fileName(index: Long, tag: String): String {
         val f = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US)
         return "${f.format(Date(startMs + index * lengthMs))}_$tag.mp4"
@@ -116,7 +116,7 @@ class SegmentMuxer(
             aTrack = audioFormat?.let { m.addTrack(it) } ?: -1
             m.start()
             muxer = m; pfd = fd; uri = u; segIndex = idx
-            Storage.recordStart(ctx, clock.fileName(idx, tag), System.currentTimeMillis())
+            Storage.recordStart(ctx, clock.fileName(idx, tag), TrueTime.nowMs())
             lastError = null
             Log.i(TAG, "new segment $u")
             EventLog.log("Clip", "$tag: new ${clock.fileName(idx, tag)} (audio track: ${aTrack >= 0})")

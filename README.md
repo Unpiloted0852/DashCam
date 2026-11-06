@@ -9,9 +9,15 @@ Android dashcam that records the road (main/rear-facing camera) and the cabin/re
 - **Stamp:** date, time and zone (or UTC), camera label, GPS lat/lon ± accuracy, speed in mph and km/h,
   heading, altitude, satellite count, optional custom text (e.g. plate). GPS position is also written
   into the MP4 metadata.
+- **Accurate time:** like "atomic clock" apps, syncs with internet time servers (NTP, ±~10 ms,
+  every 15 min) and falls back to GPS satellite time with no data. The stamp shows each frame's
+  capture time, independent of the phone's own clock.
 - **Altitude:** barometric, from the phone's pressure sensor, corrected with the altimeter setting
-  (QNH) of the nearest METAR (aviationweather.gov, refreshed every 20 min or after 25 km).
+  (QNH) of the nearest METAR (aviationweather.gov; newest report per station, refreshed every
+  15 min or after 25 km, reports over 3 h old skipped). Station, distance and report age are shown on screen.
   Uses 29.92 until a METAR arrives; uses GPS altitude ("gps alt") if the phone has no barometer.
+- **Lens choice** for the road camera (default: widest, e.g. the ultra-wide), including lenses some
+  phones hide from apps.
 - **Force far focus** (on by default for the road camera): lens locked at infinity, hyperfocal or a set
   distance so it never hunts onto the dash/windshield. On phones without manual focus it falls back to
   autofocus restricted to the road area. Quick toggle on the main screen.

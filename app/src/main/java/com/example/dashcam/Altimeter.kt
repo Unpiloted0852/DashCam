@@ -26,7 +26,7 @@ import kotlin.math.pow
 object Altimeter : SensorEventListener {
     private const val TAG = "Altimeter"
     private const val STD_HPA = 1013.25f
-    private const val REFRESH_MS = 20 * 60_000L       // METARs are hourly, specials in between
+    private const val REFRESH_MS = 15 * 60_000L       // METARs are hourly, specials (SPECI) in between
     private const val RETRY_MS = 2 * 60_000L
     private const val MOVE_REFETCH_M = 25_000f       // nearest station may have changed
 
@@ -81,6 +81,23 @@ object Altimeter : SensorEventListener {
         String.format(Locale.US, "%s %.2f", it.station, it.altimHpa / 33.8639f)
     } ?: "std 29.92"
 
+    /** e.g. "KNYC 29.87 inHg · 12 km away · report 23 min old" for the main screen. */
+    fun describe(): String {
+        val m = metar ?: return "no METAR yet — using standard 29.92"
+        val ageMin = if (m.obsEpochSec > 0) (TrueTime.nowMs() / 1000 - m.obsEpochSec) / 60 else -1
+        val here = Telemetry.location
+        val dist = here?.let {
+            val d = FloatArray(1)
+            Location.distanceBetween(it.latitude, it.longitude, m.lat, m.lon, d); d[0] / 1000f
+        }
+        return buildString {
+            append(String.format(Locale.US, "%s %.2f", m.station, m.altimHpa / 33.8639f))
+            dist?.let { append(String.format(Locale.US, " · %.0f km", it)) }
+            if (ageMin >= 0) append(" · ${ageMin} min old")
+            if (ageMin > 90) append(" (stale)")
+        }
+    }
+
     private fun maybeFetch() {
         try {
             val loc = Telemetry.location ?: return
@@ -91,8 +108,13 @@ object Altimeter : SensorEventListener {
             lastAttempt = now
             val found = fetchNearest(loc, 1.0) ?: fetchNearest(loc, 2.5)
             if (found != null) {
+                val prev = metar
                 metar = found
                 Log.i(TAG, "QNH ${found.altimHpa} hPa from ${found.station}")
+                if (prev?.station != found.station || prev.obsEpochSec != found.obsEpochSec) {
+                    EventLog.log("METAR", String.format(Locale.US, "%s QNH %.1f hPa, obs %d min ago",
+                        found.station, found.altimHpa, (TrueTime.nowMs() / 1000 - found.obsEpochSec) / 60))
+                }
             }
         } catch (e: Exception) {
             Log.w(TAG, "METAR fetch failed: ${e.message}")
@@ -102,19 +124,27 @@ object Altimeter : SensorEventListener {
     private fun fetchNearest(loc: Location, deg: Double): Metar? {
         val bbox = String.format(Locale.US, "%.3f,%.3f,%.3f,%.3f",
             loc.latitude - deg, loc.longitude - deg, loc.latitude + deg, loc.longitude + deg)
-        val conn = URL("https://aviationweather.gov/api/data/metar?bbox=$bbox&format=json")
+        val conn = URL("https://aviationweather.gov/api/data/metar?bbox=$bbox&format=json&hours=3")
             .openConnection() as HttpURLConnection
         conn.connectTimeout = 10_000; conn.readTimeout = 15_000
         conn.setRequestProperty("User-Agent", "DashCam-Android")
         try {
             if (conn.responseCode != 200) return null
             val arr = JSONArray(conn.inputStream.bufferedReader().readText())
-            val nowSec = System.currentTimeMillis() / 1000
-            var best: Metar? = null
-            var bestDist = Float.MAX_VALUE
+            val nowSec = TrueTime.nowMs() / 1000
+            // Newest report per station (the query can return several, e.g. a METAR and a later SPECI).
+            val newest = HashMap<String, org.json.JSONObject>()
             for (i in 0 until arr.length()) {
                 val o = arr.getJSONObject(i)
                 if (!o.has("altim") || o.isNull("altim")) continue
+                val id = o.optString("icaoId")
+                if (id.isEmpty()) continue
+                val cur = newest[id]
+                if (cur == null || o.optLong("obsTime") > cur.optLong("obsTime")) newest[id] = o
+            }
+            var best: Metar? = null
+            var bestDist = Float.MAX_VALUE
+            for ((id, o) in newest) {
                 val obs = o.optLong("obsTime", 0)
                 if (obs > 0 && nowSec - obs > 3 * 3600) continue   // ignore stale reports
                 val lat = o.optDouble("lat"); val lon = o.optDouble("lon")
@@ -122,7 +152,7 @@ object Altimeter : SensorEventListener {
                 Location.distanceBetween(loc.latitude, loc.longitude, lat, lon, d)
                 if (d[0] < bestDist) {
                     bestDist = d[0]
-                    best = Metar(o.getString("icaoId"), o.getDouble("altim").toFloat(), lat, lon, obs,
+                    best = Metar(id, o.getDouble("altim").toFloat(), lat, lon, obs,
                         SystemClock.elapsedRealtime(), Location(loc))
                 }
             }

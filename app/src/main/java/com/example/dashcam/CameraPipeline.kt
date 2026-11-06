@@ -178,11 +178,12 @@ class CameraPipeline(
             t.updateTexImage()
             t.getTransformMatrix(stMatrix)
             val ts = t.timestamp
+            val frameWall = TrueTime.atElapsedNs(toElapsedNs(ts))
 
             encEgl?.let { s ->
                 e.makeCurrent(s)
                 val ov = overlayFor(encOverlay, recSize).also { encOverlay = it }
-                ov.update(overlayOptions)
+                ov.update(overlayOptions, frameWall)
                 GLES20.glViewport(0, 0, recSize.width, recSize.height)
                 buildMvp(recAngle)
                 drawer?.drawCamera(oesTex, stMatrix, mvp)
@@ -196,7 +197,7 @@ class CameraPipeline(
                 val angle = currentAngle()
                 val frame = outputSize(angle)
                 val ov = overlayFor(previewOverlay, frame).also { previewOverlay = it }
-                ov.update(overlayOptions)
+                ov.update(overlayOptions, frameWall)
                 GLES20.glViewport(0, 0, previewW, previewH)
                 GLES20.glClearColor(0f, 0f, 0f, 1f)
                 GLES20.glClear(GLES20.GL_COLOR_BUFFER_BIT)
@@ -261,6 +262,10 @@ class CameraPipeline(
             GLES20.glViewport(0, previewH - h, previewW, h)   // GL origin is bottom-left
         }
     }
+
+    /** Camera timestamp -> elapsedRealtimeNanos (the clock TrueTime is anchored to). */
+    private fun toElapsedNs(ts: Long): Long =
+        if (timestampRealtime) ts else ts + (SystemClock.elapsedRealtimeNanos() - System.nanoTime())
 
     private fun toMonotonicNs(ts: Long): Long =
         if (timestampRealtime) ts - (SystemClock.elapsedRealtimeNanos() - System.nanoTime()) else ts
