@@ -81,6 +81,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         PreferenceManager.getDefaultSharedPreferences(this).registerOnSharedPreferenceChangeListener(this)
         Telemetry.start(this)
         Altimeter.start(this)
+        getSystemService(CameraManager::class.java).registerAvailabilityCallback(availability, ui)
         startCameras()
     }
 
@@ -103,6 +104,8 @@ class DashCamService : Service(), CameraPipeline.Listener,
 
     override fun onDestroy() {
         PreferenceManager.getDefaultSharedPreferences(this).unregisterOnSharedPreferenceChangeListener(this)
+        getSystemService(CameraManager::class.java).unregisterAvailabilityCallback(availability)
+        ui.removeCallbacks(retry)
         audio?.stop(); audio = null
         stopCameras()
         Telemetry.stop()
@@ -133,6 +136,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         }
         warning = null
         cabinGaveUp = !settings.cabinEnabled || frontId == null
+        cabinOpenFailures = 0
         if (backId != null) {
             mainCam = CameraPipeline(this, CameraPipeline.Role.MAIN, backId, settings.mainSize, this).also {
                 configure(it); it.start(); previewMain?.let { p -> it.setPreview(p.surface, p.w, p.h) }
@@ -181,36 +185,73 @@ class DashCamService : Service(), CameraPipeline.Listener,
 
     override fun onCameraStarted(p: CameraPipeline) {
         ui.post {
+            if (p === cabinCam) cabinOpenFailures = 0
+            if (warning?.contains("will resume automatically") == true &&
+                listOfNotNull(mainCam, cabinCam).all { it.cameraOpen }) warning = null
             if (p === mainCam) startCabin()
             if (p === cabinCam && warning?.startsWith("This phone doesn't list") == true) warning = null
             changed()
         }
     }
 
-    override fun onCameraLost(p: CameraPipeline, reason: String) {
+    override fun onCameraLost(p: CameraPipeline, reason: String, kind: CameraPipeline.Loss) {
         ui.post {
-            Log.w(TAG, "${p.role.label} camera lost: $reason")
-            if (p === cabinCam) {
-                // Usually means the phone can't run both cameras at once.
-                cabinGaveUp = true
-                warning = "Rear (selfie) camera unavailable while the front camera runs — this phone " +
-                    "probably can't use both cameras at once. Recording front only."
-                val c = cabinCam; cabinCam = null
-                worker.execute { c?.release() }
-            } else if (p === mainCam) {
-                val c = cabinCam
-                if (c != null && c.cameraOpen) {
-                    // Opening the selfie camera kicked the road camera off: give up on the selfie one.
-                    cabinGaveUp = true
-                    cabinCam = null
-                    warning = "This phone can't record both cameras at once. Recording front only."
-                    worker.execute { c.release(); ui.post { mainCam?.reopen() } }
-                } else {
-                    warning = "Front camera lost ($reason) — retrying"
-                    ui.postDelayed({ mainCam?.reopen() }, 3000)
+            Log.w(TAG, "${p.role.label} camera lost: $reason ($kind)")
+            val now = SystemClock.elapsedRealtime()
+            val c = cabinCam
+            when {
+                p === cabinCam && (kind == CameraPipeline.Loss.TOO_MANY ||
+                        (p.startedAt == 0L && ++cabinOpenFailures >= 3)) -> {
+                    // The phone can't run both cameras (or the selfie camera never came up at all).
+                    giveUpOnCabin("Rear (selfie) camera unavailable while the front camera runs — this phone " +
+                        "probably can't use both cameras at once. Recording front only.")
+                }
+                p === mainCam && c != null && c.startedAt != 0L && now - c.startedAt < 5000 -> {
+                    // Starting the selfie camera kicked the road camera off: concurrency isn't supported.
+                    giveUpOnCabin("This phone can't record both cameras at once. Recording front only.")
+                    worker.execute { ui.post { mainCam?.reopen() } }
+                }
+                else -> {
+                    // Borrowed (face unlock, another camera app…) or a transient error: keep the clip
+                    // going and grab the camera back as soon as it is free.
+                    warning = "${p.role.label.lowercase().replaceFirstChar { it.uppercase() }} camera is in use by " +
+                        "something else (face unlock?) — it will resume automatically"
+                    scheduleRetry()
                 }
             }
             changed()
+        }
+    }
+
+    private var cabinOpenFailures = 0
+
+    private fun giveUpOnCabin(msg: String) {
+        cabinGaveUp = true
+        warning = msg
+        val c = cabinCam; cabinCam = null
+        if (c != null) worker.execute { c.release() }
+    }
+
+    /** Reopen any camera that isn't running. Also driven by the camera-availability callback. */
+    private val retry = object : Runnable {
+        override fun run() {
+            val down = listOfNotNull(mainCam, cabinCam).filter { !it.cameraOpen }
+            down.forEach { it.reopen() }
+            if (down.isNotEmpty()) ui.postDelayed(this, 5000)
+        }
+    }
+
+    private fun scheduleRetry() {
+        ui.removeCallbacks(retry)
+        ui.postDelayed(retry, 1500)
+    }
+
+    private val availability = object : CameraManager.AvailabilityCallback() {
+        override fun onCameraAvailable(cameraId: String) {
+            listOfNotNull(mainCam, cabinCam).firstOrNull { it.cameraId == cameraId && !it.cameraOpen }?.let {
+                Log.i(TAG, "${it.role.label} camera free again — reopening")
+                it.reopen()
+            }
         }
     }
 

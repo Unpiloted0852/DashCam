@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Rect
 import android.graphics.SurfaceTexture
+import android.hardware.camera2.CameraAccessException
 import android.hardware.camera2.CameraCaptureSession
 import android.hardware.camera2.CameraCharacteristics
 import android.hardware.camera2.CameraDevice
@@ -47,9 +48,18 @@ class CameraPipeline(
         MAIN("front", "FRONT"), CABIN("rear", "REAR")
     }
 
+    /** Why a camera went away. */
+    enum class Loss {
+        /** Something with higher priority took it (face unlock, another camera app, policy). Comes back. */
+        BORROWED,
+        /** The phone can't run this many cameras at once. Won't come back by retrying. */
+        TOO_MANY,
+        OTHER,
+    }
+
     interface Listener {
         fun onCameraStarted(p: CameraPipeline)
-        fun onCameraLost(p: CameraPipeline, reason: String)
+        fun onCameraLost(p: CameraPipeline, reason: String, kind: Loss)
     }
 
     private val manager = ctx.getSystemService(CameraManager::class.java)
@@ -121,6 +131,9 @@ class CameraPipeline(
 
     // --- status for UI ---
     @Volatile var cameraOpen = false; private set
+    /** When the camera last started streaming (elapsedRealtime), 0 if never. */
+    @Volatile var startedAt = 0L; private set
+    private var opening = false   // camera thread only: an open is in flight
     @Volatile var fps = 0f; private set
     @Volatile var focusStatus = ""; private set
     val isRecording: Boolean get() = muxer != null
@@ -151,7 +164,7 @@ class CameraPipeline(
             cam.post { openCamera() }
         } catch (ex: Exception) {
             Log.e(TAG, "GL setup failed", ex)
-            listener.onCameraLost(this, "GL setup failed: ${ex.message}")
+            listener.onCameraLost(this, "GL setup failed: ${ex.message}", Loss.OTHER)
         }
     }
 
@@ -385,12 +398,24 @@ class CameraPipeline(
 
     @SuppressLint("MissingPermission")
     private fun openCamera() {
-        if (released || device != null) return
+        if (released || device != null || opening) return
+        opening = true
         try {
             manager.openCamera(cameraId, stateCallback, cam)
+        } catch (e: CameraAccessException) {
+            opening = false
+            Log.w(TAG, "${role.label} openCamera: ${e.message}")
+            val kind = when (e.reason) {
+                CameraAccessException.CAMERA_IN_USE, CameraAccessException.CAMERA_DISABLED,
+                CameraAccessException.CAMERA_DISCONNECTED -> Loss.BORROWED
+                CameraAccessException.MAX_CAMERAS_IN_USE -> Loss.TOO_MANY
+                else -> Loss.OTHER
+            }
+            listener.onCameraLost(this, e.message ?: "open failed", kind)
         } catch (e: Exception) {
+            opening = false
             Log.e(TAG, "openCamera", e)
-            listener.onCameraLost(this, e.message ?: "open failed")
+            listener.onCameraLost(this, e.message ?: "open failed", Loss.OTHER)
         }
     }
 
@@ -398,17 +423,24 @@ class CameraPipeline(
 
     private val stateCallback = object : CameraDevice.StateCallback() {
         override fun onOpened(d: CameraDevice) {
+            opening = false
             if (released) { d.close(); return }
             device = d
             createSession(d)
         }
-        override fun onDisconnected(d: CameraDevice) = lost(d, "disconnected")
-        override fun onError(d: CameraDevice, error: Int) = lost(d, "error $error")
-        private fun lost(d: CameraDevice, why: String) {
+        // A higher-priority client (e.g. face unlock on the selfie camera) shows up as a disconnect.
+        override fun onDisconnected(d: CameraDevice) = lost(d, "disconnected", Loss.BORROWED)
+        override fun onError(d: CameraDevice, error: Int) = lost(d, "error $error", when (error) {
+            ERROR_CAMERA_IN_USE, ERROR_CAMERA_DISABLED -> Loss.BORROWED
+            ERROR_MAX_CAMERAS_IN_USE -> Loss.TOO_MANY
+            else -> Loss.OTHER
+        })
+        private fun lost(d: CameraDevice, why: String, kind: Loss) {
+            opening = false
             d.close()
-            if (device == d) { device = null; session = null }
+            if (device == d || device == null) { device = null; session = null }
             cameraOpen = false
-            if (!released) listener.onCameraLost(this@CameraPipeline, why)
+            if (!released) listener.onCameraLost(this@CameraPipeline, why, kind)
         }
     }
 
@@ -420,6 +452,7 @@ class CameraPipeline(
                 if (released) { s.close(); return }
                 session = s
                 cameraOpen = true
+                startedAt = SystemClock.elapsedRealtime()
                 applyRequest()
                 listener.onCameraStarted(this@CameraPipeline)
             }
@@ -429,7 +462,7 @@ class CameraPipeline(
                 val smaller = fallbackSize()
                 if (smaller != null && !isRecording) {
                     gl.post { resizeBuffers(smaller); cam.post { openCamera() } }
-                } else listener.onCameraLost(this@CameraPipeline, "configure failed")
+                } else listener.onCameraLost(this@CameraPipeline, "configure failed", Loss.TOO_MANY)
             }
         }
         try {
@@ -437,7 +470,7 @@ class CameraPipeline(
                 listOf(OutputConfiguration(surface)), exec, cb))
         } catch (e: Exception) {
             Log.e(TAG, "createCaptureSession", e)
-            listener.onCameraLost(this, e.message ?: "session failed")
+            listener.onCameraLost(this, e.message ?: "session failed", Loss.OTHER)
         }
     }
 
