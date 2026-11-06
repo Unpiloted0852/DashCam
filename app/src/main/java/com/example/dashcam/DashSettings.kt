@@ -33,7 +33,12 @@ class DashSettings(ctx: Context) {
     val overlayLabel: String get() = str("overlay_label", "").trim()
     val storageVolume: String get() = str("storage_volume", "external_primary")
     /** Stop recording after this long at ~0 mph; 0 = never. */
-    val autoStopMs: Long get() = str("auto_stop_minutes", "0").toLong() * 60_000L
+    val autoStopMs: Long get() = str("auto_stop_minutes", "10").toLong() * 60_000L
+    /** End-of-drive signals (see DriveEndDetector). */
+    val endOnWalking: Boolean get() = bool("auto_stop_walk", true)
+    val endOnUnplug: Boolean get() = bool("auto_stop_unplug", true)
+    /** MAC address of the car's Bluetooth, or "" for off. */
+    val endBluetoothAddress: String get() = str("auto_stop_bt", "")
     val autoRecord: Boolean get() = bool("auto_record", false)
     val keepScreenOn: Boolean get() = bool("keep_screen_on", true)
 

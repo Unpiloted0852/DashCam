@@ -28,7 +28,10 @@ Android dashcam that records the road (main/rear-facing camera) and the cabin/re
 - **Loop recording** in 1–10 min clips with a size limit (oldest deleted first) and a 1 GB free-space floor.
 - **Lock clip** (button or notification) protects the current and previous clip in `Movies/DashCam/Locked`.
 - **Auto-start** every time the app is opened (setting).
-- **Auto-stop when parked:** stops after N minutes at ~0 mph, only arms after you've driven off.
+- **End-of-drive detection:** after you've driven, recording stops when you walk away (step
+  detector), when the car charger is unplugged while stopped, or (optional) when the car's Bluetooth
+  disconnects — each with a short grace period that driving again cancels — with a "parked for N
+  minutes" timer as a backup. The reason is logged and shown in the notification.
 - **Clips screen** (🎞): every recording with front/rear thumbnails, length, size and lock state;
   "Locked only" filter; tap to play, long-press to lock/unlock, share or delete. The player shows
   Front, Rear or Both side by side (stacked in portrait), kept in sync with one seek bar.

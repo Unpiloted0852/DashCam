@@ -11,6 +11,6 @@
     <string-array name="quality_values"><item>0.10</item><item>0.15</item><item>0.25</item></string-array>
     <string-array name="focus_labels"><item>Infinity</item><item>Hyperfocal (sharp from a few metres to infinity)</item><item>20 m</item><item>10 m</item><item>5 m</item></string-array>
     <string-array name="focus_values"><item>inf</item><item>hyper</item><item>20</item><item>10</item><item>5</item></string-array>
-    <string-array name="autostop_labels"><item>Off</item><item>After 2 min at 0 mph</item><item>After 5 min at 0 mph</item><item>After 10 min at 0 mph</item><item>After 15 min at 0 mph</item><item>After 30 min at 0 mph</item></string-array>
+    <string-array name="autostop_labels"><item>Off</item><item>After 2 min</item><item>After 5 min</item><item>After 10 min</item><item>After 15 min</item><item>After 30 min</item></string-array>
     <string-array name="autostop_values"><item>0</item><item>2</item><item>5</item><item>10</item><item>15</item><item>30</item></string-array>
 </resources>

@@ -5,7 +5,14 @@ import android.view.View
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import android.Manifest
+import android.bluetooth.BluetoothManager
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.preference.ListPreference
+import androidx.preference.SwitchPreferenceCompat
 import androidx.preference.Preference
 import androidx.preference.PreferenceFragmentCompat
 import com.google.android.material.appbar.MaterialToolbar
@@ -33,6 +40,39 @@ class SettingsActivity : AppCompatActivity() {
     override fun onSupportNavigateUp(): Boolean { finish(); return true }
 
     class Fragment : PreferenceFragmentCompat() {
+        private val activityPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { ok ->
+            if (!ok) findPreference<SwitchPreferenceCompat>("auto_stop_walk")?.isChecked = false
+        }
+        private val btPerm = registerForActivityResult(ActivityResultContracts.RequestPermission()) { setupBluetoothList() }
+
+        private fun granted(p: String) =
+            ContextCompat.checkSelfPermission(requireContext(), p) == PackageManager.PERMISSION_GRANTED
+
+        /** Lists paired Bluetooth devices so the user can pick their car. */
+        @android.annotation.SuppressLint("MissingPermission")
+        private fun setupBluetoothList() {
+            val pref = findPreference<ListPreference>("auto_stop_bt") ?: return
+            val perm = if (Build.VERSION.SDK_INT >= 31) Manifest.permission.BLUETOOTH_CONNECT else Manifest.permission.BLUETOOTH
+            if (!granted(perm)) {
+                pref.entries = arrayOf("Off"); pref.entryValues = arrayOf("")
+                pref.summaryProvider = null
+                pref.summary = "Tap to allow Bluetooth access and pick your car"
+                pref.setOnPreferenceClickListener { btPerm.launch(perm); true }
+                return
+            }
+            pref.onPreferenceClickListener = null
+            val bonded = try {
+                requireContext().getSystemService(BluetoothManager::class.java)?.adapter?.bondedDevices.orEmpty()
+                    .sortedBy { it.name ?: it.address }
+            } catch (_: SecurityException) { emptyList() }
+            pref.entries = (listOf("Off") + bonded.map { it.name ?: it.address }).toTypedArray()
+            pref.entryValues = (listOf("") + bonded.map { it.address }).toTypedArray()
+            pref.summaryProvider = Preference.SummaryProvider<ListPreference> { p ->
+                if (p.value.isNullOrEmpty()) "Off — pick your car to stop when it disconnects"
+                else "${p.entry} disconnecting while stopped ends the drive"
+            }
+        }
+
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             setPreferencesFromResource(R.xml.preferences, rootKey)
             findPreference<ListPreference>("main_lens")?.let { pref ->
@@ -51,8 +91,15 @@ class SettingsActivity : AppCompatActivity() {
             }
             findPreference<ListPreference>("auto_stop_minutes")?.summaryProvider =
                 Preference.SummaryProvider<ListPreference> { p ->
-                    if (p.value == "0") "Off" else "${p.entry} — only after you've driven off; uses GPS speed"
+                    if (p.value == "0") "Off" else "${p.entry} at walking pace or slower — backup for the signals above"
                 }
+            findPreference<SwitchPreferenceCompat>("auto_stop_walk")?.setOnPreferenceChangeListener { _, on ->
+                if (on == true && !granted(Manifest.permission.ACTIVITY_RECOGNITION)) {
+                    activityPerm.launch(Manifest.permission.ACTIVITY_RECOGNITION)
+                }
+                true
+            }
+            setupBluetoothList()
             findPreference<Preference>("check_update")?.apply {
                 summary = "Installed: v${BuildConfig.VERSION_NAME} · github.com/${BuildConfig.UPDATE_REPO}"
                 setOnPreferenceClickListener { Updater.checkNow(requireActivity()); true }

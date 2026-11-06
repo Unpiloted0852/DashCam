@@ -199,6 +199,7 @@ class MainActivity : AppCompatActivity() {
             Manifest.permission.ACCESS_COARSE_LOCATION,
             Manifest.permission.RECORD_AUDIO,
         )
+        if (settings.endOnWalking) perms += Manifest.permission.ACTIVITY_RECOGNITION
         if (Build.VERSION.SDK_INT >= 33) perms += Manifest.permission.POST_NOTIFICATIONS
         val missing = perms.filter { !hasPerm(it) }
         if (missing.isNotEmpty()) permLauncher.launch(missing.toTypedArray())
@@ -273,7 +274,8 @@ class MainActivity : AppCompatActivity() {
                 s.cabinCam?.takeIf { it.isRecording }?.role?.label).joinToString("+")
             recStatus.text = String.format("● REC %02d:%02d:%02d  %s%s", secs / 3600, secs / 60 % 60, secs % 60,
                 cams, if (s.audioActive) " + mic" else "") +
-                (s.autoStopRemainingMs?.let { String.format("\nParked — auto-stop in %d:%02d", it / 60000, it / 1000 % 60) } ?: "")
+                (s.autoStopCountdown?.let { (why, ms) ->
+                    String.format("\nStopping in %d:%02d — %s", ms / 60000, ms / 1000 % 60, why) } ?: "")
             recStatus.setTextColor(if (secs % 2 == 0L) 0xFFFF5252.toInt() else 0xFFFFFFFF.toInt())
         }
         s?.muxerError()?.let { showWarning(it) }

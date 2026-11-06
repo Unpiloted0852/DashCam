@@ -17,11 +17,22 @@
             app:summary="Cabin sound, saved into both the front and rear clips" app:defaultValue="true" />
         <SwitchPreferenceCompat app:key="auto_record" app:title="Start recording when the app opens"
             app:summary="Every time the app is opened or brought to the front" app:defaultValue="false" />
-        <ListPreference app:key="auto_stop_minutes" app:title="Auto-stop when parked"
-            app:entries="@array/autostop_labels" app:entryValues="@array/autostop_values"
-            app:defaultValue="0" />
         <SwitchPreferenceCompat app:key="keep_screen_on" app:title="Keep screen on"
             app:defaultValue="true" />
+    </PreferenceCategory>
+
+    <PreferenceCategory app:title="End of drive (auto-stop)">
+        <SwitchPreferenceCompat app:key="auto_stop_walk" app:title="Stop when I walk away"
+            app:summary="After the car stops, footsteps detected by the phone end the recording"
+            app:defaultValue="true" />
+        <SwitchPreferenceCompat app:key="auto_stop_unplug" app:title="Stop when car power is cut"
+            app:summary="Charger unplugged while stopped (only if it was charging during the drive)"
+            app:defaultValue="true" />
+        <ListPreference app:key="auto_stop_bt" app:title="Stop when car Bluetooth disconnects"
+            app:defaultValue="" />
+        <ListPreference app:key="auto_stop_minutes" app:title="Also stop after time parked"
+            app:entries="@array/autostop_labels" app:entryValues="@array/autostop_values"
+            app:defaultValue="10" />
     </PreferenceCategory>
 
     <PreferenceCategory app:title="Front camera (road ahead)">

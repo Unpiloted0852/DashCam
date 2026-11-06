@@ -319,7 +319,8 @@ class DashCamService : Service(), CameraPipeline.Listener,
         volumeNote?.let { errors += it }
         if (errors.isNotEmpty()) warning = errors.joinToString("\n")
         recording = true
-        stillSince = 0L; hasMoved = false; autoStopRemainingMs = null
+        driveEnd?.stop()
+        driveEnd = DriveEndDetector(this, settings, ::onDriveEnded).also { it.start() }
         ui.removeCallbacks(autoStopCheck)
         ui.postDelayed(autoStopCheck, 2000)
         recordingStartElapsed = SystemClock.elapsedRealtime()
@@ -350,7 +351,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         if (!recording) return
         EventLog.log("Rec", "stop")
         ui.removeCallbacks(autoStopCheck)
-        autoStopRemainingMs = null
+        driveEnd?.stop(); driveEnd = null
         recording = false
         stopping = true
         changed()
@@ -386,52 +387,31 @@ class DashCamService : Service(), CameraPipeline.Listener,
     // ------------------------------------------------------------------ auto-stop when parked
 
     private var recVolume = "external_primary"
-    private var stillSince = 0L
-    private var hasMoved = false
-    /** Time left before auto-stop while parked, or null when not counting down. */
-    var autoStopRemainingMs: Long? = null; private set
+    /** Why and how soon recording will stop on its own, or null. */
+    val autoStopCountdown: Pair<String, Long>? get() = driveEnd?.countdown
+    private var driveEnd: DriveEndDetector? = null
 
-    /**
-     * Counts time spent at ~0 mph and stops recording once it passes the configured limit. It only
-     * arms after the car has actually moved, so sitting in the driveway setting up navigation
-     * doesn't end the recording. If GPS drops out (e.g. parked in a garage) the last known speed is used.
-     */
+    /** Runs the end-of-drive detector every 2 s while recording. */
     private val autoStopCheck = object : Runnable {
         override fun run() {
             if (!recording) return
-            val limit = settings.autoStopMs
-            val speed: Float? = Telemetry.speedMps()
-                ?: if (Telemetry.freshFix() == null) Telemetry.location?.takeIf { it.hasSpeed() }?.speed else null
-            if (speed != null && speed > 2.2f) hasMoved = true   // ~5 mph
-            val still = when {
-                speed == null -> null                              // unknown: leave the timer alone
-                else -> speed < DashSettings.STOP_SPEED_MPS
-            }
-            val now = SystemClock.elapsedRealtime()
-            if (limit <= 0 || !hasMoved || still == false) {
-                stillSince = 0L; autoStopRemainingMs = null
-            } else if (still == true || stillSince != 0L) {
-                if (stillSince == 0L) stillSince = now
-                val left = limit - (now - stillSince)
-                autoStopRemainingMs = left.coerceAtLeast(0)
-                if (left <= 0) {
-                    Log.i(TAG, "auto-stop after ${limit / 60000} min parked")
-                    EventLog.log("Rec", "auto-stop after ${limit / 60000} min parked")
-                    toast = "Parked for ${limit / 60000} min — recording stopped"
-                    notifyAutoStopped(limit)
-                    stopRecording()
-                    return
-                }
-            }
-            ui.postDelayed(this, 2000)
+            driveEnd?.tick()
+            if (recording) ui.postDelayed(this, 2000)
         }
     }
 
-    private fun notifyAutoStopped(limit: Long) {
+    private fun onDriveEnded(reason: String) {
+        Log.i(TAG, "drive ended: $reason")
+        toast = "Drive ended ($reason) — recording stopped"
+        notifyAutoStopped(reason)
+        stopRecording()
+    }
+
+    private fun notifyAutoStopped(reason: String) {
         val n = NotificationCompat.Builder(this, CHANNEL)
             .setSmallIcon(R.drawable.ic_notification)
             .setContentTitle("DashCam stopped")
-            .setContentText("Stopped automatically after ${limit / 60000} min at 0 mph")
+            .setContentText("Drive ended ($reason) — recording stopped")
             .setAutoCancel(true)
             .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java),
                 PendingIntent.FLAG_IMMUTABLE))
