@@ -440,6 +440,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         if (!recording) return
         // Lock on either phone locks both.
         if (!fromPeer) link?.send("lock")
+        EventLog.log("Rec", "lock" + if (fromPeer) " (from the other phone)" else "")
         mainCam?.lockClip(); cabinCam?.lockClip()
         // Also the clip just before (covers a clip that ended because the phone was turned).
         val previous = lastClosed.values.toList(); lastClosed.clear()
@@ -669,14 +670,19 @@ class DashCamService : Service(), CameraPipeline.Listener,
     private fun syncTimeFromPeer() {
         val l = link ?: return
         pings.clear(); pongs.clear()
-        repeat(8) {
+        repeat(PINGS) {
             val id = ++pingId
             pings[id] = Ping(SystemClock.elapsedRealtimeNanos())
             l.send("ping", JSONObject().put("id", id))
-            try { Thread.sleep(120) } catch (_: InterruptedException) { return }
+            try { Thread.sleep(80) } catch (_: InterruptedException) { return }
         }
         try { Thread.sleep(800) } catch (_: InterruptedException) { return }
-        val best = synchronized(pongs) { pongs.minByOrNull { it.rttMs } } ?: return
+        val got = synchronized(pongs) { pongs.toList() }
+        val best = got.minByOrNull { it.rttMs } ?: run { EventLog.log("Time", "no answer to time pings"); return }
+        // Offsets implied by each sample; their spread shows how much to trust the best one.
+        val offs = got.map { it.trueMs - it.atNs / 1e6 }
+        Log.i(TAG, String.format(java.util.Locale.US, "time pings: %d/$PINGS, rtt %s ms, offset spread %.1f ms",
+            got.size, got.map { it.rttMs.toInt() }.sorted(), (offs.maxOrNull() ?: 0.0) - (offs.minOrNull() ?: 0.0)))
         if (best.rttMs > 500) { EventLog.log("Time", "link round trip too long (${best.rttMs.toInt()} ms) — skipped"); return }
         TrueTime.onLinkSample(best.trueMs, best.atNs, best.rttMs, best.unc, best.src)
     }
@@ -813,5 +819,6 @@ class DashCamService : Service(), CameraPipeline.Listener,
         const val ACTION_LOCK = "com.example.dashcam.LOCK"
         const val REMOTE_LABEL = "REMOTE"
         private const val TIME_SYNC_EVERY_MS = 60_000L
+        private const val PINGS = 12
     }
 }

@@ -67,16 +67,34 @@ object TrueTime {
      */
     fun onLinkSample(trueMs: Double, elapsedNs: Long, rttMs: Double, peerUncertaintyMs: Long, peerSource: String) {
         val wasFresh = linkFresh()
+        // Keep the current anchor if it is still better: its error grows only by the two crystals' drift.
+        val boundNow = currentLinkBoundMs()
+        if (wasFresh && boundNow != null && rttMs / 2 > boundNow) {
+            lastLinkElapsed = SystemClock.elapsedRealtime()
+            uncertaintyMs = maxOf(1L, boundNow.toLong()) + maxOf(0L, peerUncertaintyMs)
+            return
+        }
         val before = if (anchorTrueMs != null) nowMsExact() else null
         anchorTrueMs = trueMs; anchorElapsedNs = elapsedNs
         uncertaintyMs = maxOf(1L, (rttMs / 2).toLong()) + maxOf(0L, peerUncertaintyMs)
         source = "main phone ($peerSource)"
-        linkRttMs = rttMs
+        linkRttMs = rttMs; linkAnchorNs = elapsedNs
         lastLinkElapsed = SystemClock.elapsedRealtime(); lastSyncElapsed = lastLinkElapsed
         val step = before?.let { String.format(Locale.US, "%+.1f", trueMs + (SystemClock.elapsedRealtimeNanos() - elapsedNs) / 1e6 - it) } ?: "n/a"
         if (!wasFresh) EventLog.log("Time", String.format(Locale.US,
             "synced from main phone, round trip %.1f ms, step %s ms; phone clock off by %d ms", rttMs, step, phoneClockErrorMs()))
     }
+
+    private const val DRIFT_MS_PER_S = 0.1   // two phone crystals, up to ~50 ppm each
+    @Volatile private var linkAnchorNs = 0L
+
+    /** Worst-case error (ms) of the current link-based anchor, or null if there is none. */
+    private fun currentLinkBoundMs(): Double? {
+        if (linkRttMs < 0 || linkAnchorNs == 0L) return null
+        val ageS = (SystemClock.elapsedRealtimeNanos() - linkAnchorNs) / 1e9
+        return linkRttMs / 2 + ageS * DRIFT_MS_PER_S
+    }
+
 
     /** Accurate wall time at a given elapsedRealtimeNanos instant (e.g. when a frame was captured). */
     fun atElapsedNs(elapsedNs: Long): Long {

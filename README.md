@@ -43,6 +43,29 @@ Android dashcam that records the road (main/rear-facing camera) and the cabin/re
 - **Audio** is recorded into both the front and rear clips, so either file stands on its own.
 - **Storage:** internal or SD card (`Movies/DashCam` on the chosen volume); falls back to internal storage if the card is missing.
 
+- **Remote camera (second phone)** — *experimental, `remote-camera` branch*: an old phone (no SIM,
+  internet or Google Play Services needed, LineageOS is fine) stuck to the rear window records as a
+  remote camera controlled by the main phone over Bluetooth.
+  - Setup: pair the phones once in Android's Bluetooth settings; in DashCam Settings → *Remote camera*
+    set one phone to *Main phone, with a remote camera* and the other to *Remote camera for another
+    phone*, and pick each other. The remote records one camera (back, using its Lens setting, or selfie).
+  - Each phone records its own clips; footage never goes over the link, so a dropped link loses nothing.
+  - The main phone starts/stops the remote, ends its drive (end-of-drive detection) and mirrors the
+    stamp, clip length, quality, audio and auto-stop settings. Lock on either phone locks both;
+    Record/Stop on the remote asks the main phone.
+  - The main phone is the remote's clock: NTP-style ping exchange over the link (best of 12 round
+    trips, refreshed every minute), so both stamps agree to within a few ms. It also sends its
+    position, speed, heading, altitude, satellites, place name and METAR weather once a second for
+    the remote's stamp.
+  - Clips pair up by name: the remote uses the main phone's segment times, tagged `_remote`
+    (e.g. `2026-11-07_21-54-55_remote.mp4` next to `…_front.mp4` and `…_rear.mp4`).
+  - If the link drops the remote keeps recording with its own GPS (if any), the last weather it
+    received, GPS time after 10 minutes, and its own end-of-drive detection; it rejoins automatically.
+  - Android won't let a camera app start from the background, so open DashCam on the remote once after
+    switching it on. It can then sit with the screen off: it turns its cameras and GPS off and waits
+    for the main phone. "Turn off" in its notification stops it.
+  - Both phones must run the same link protocol; otherwise both show "Versions don't match".
+
 - **Updates:** checks this repo's GitHub Releases when the app opens (at most every 6 h, never while
   recording) and offers to download and install the new APK. Also "Check for updates now" in Settings.
 
@@ -64,3 +87,5 @@ back both up — without them, installed copies can't be updated.
 ./gradlew assembleDebug
 adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
+Experimental builds (`./gradlew assembleExp`) install as "DashCam exp" (`com.example.dashcam.exp`) next to
+the real app and never self-update. Don't publish releases from experimental branches.

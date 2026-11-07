@@ -140,6 +140,7 @@ object Altimeter : SensorEventListener {
 
     private fun maybeFetch() {
         try {
+            if (Telemetry.relayed() != null) return   // remote camera: the main phone's report is used
             val loc = Telemetry.location ?: return
             val now = SystemClock.elapsedRealtime()
             val m = metar

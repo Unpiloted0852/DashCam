@@ -232,6 +232,8 @@ class MainActivity : AppCompatActivity() {
             attachPreview(CameraPipeline.Role.CABIN, cabinPreview)
             if (autoRecordPending && !s.recording) s.startRecording()
             autoRecordPending = false
+            // A remote camera sits with the screen off for hours: ask once to be spared battery limits.
+            if (settings.isRemote) BatteryHelper.requestOnce(this@MainActivity)
             Updater.checkInBackground(this@MainActivity) { service?.recording == true || autoRecordPending }
             render()
         }
