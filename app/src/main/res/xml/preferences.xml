@@ -128,6 +128,11 @@
         <Preference app:key="check_update" app:title="Check for updates now" />
     </PreferenceCategory>
 
+    <PreferenceCategory app:title="Advanced">
+        <Preference app:key="baro_calibrate" app:title="Calibrate altitude"
+            app:summary="Correct the phone's barometer using a known altitude" />
+    </PreferenceCategory>
+
     <PreferenceCategory app:title="Troubleshooting">
         <Preference app:key="share_log" app:title="Share diagnostic log"
             app:summary="Camera and recording events from recent drives, to help track down problems" />
