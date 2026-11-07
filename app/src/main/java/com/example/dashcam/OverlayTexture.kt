@@ -70,7 +70,8 @@ class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: Frame
         var sx = 1f
         repeat(3) { val w = widestAt(sx); if (w > avail) sx *= avail / w * 0.995f }
         scaleX = sx
-        barW = widestAt(sx) + 2 * pad
+        // The box always spans the full frame width, however short the lines are.
+        barW = bmp.width.toFloat()
     }
 
     /** [frameWallMs]: accurate wall time at which the frame was captured. */

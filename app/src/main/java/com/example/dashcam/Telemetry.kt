@@ -261,9 +261,10 @@ object Telemetry {
         val kt = w.windKt ?: return "wind --"
         if (kt == 0) return "wind calm"
         val dir = w.windDir
-        val d = if (dir == null || dir < 0) "VRB " else String.format(Locale.US, "%03d°", dir)
-        val g = w.gustKt?.let { String.format(Locale.US, " G%2d", it.coerceAtMost(99)) } ?: ""
-        return "wind $d" + String.format(Locale.US, "/%2dkt", kt.coerceAtMost(99)) + g
+        val d = if (dir == null || dir < 0) "VRB" else String.format(Locale.US, "%03d°", dir)
+        val g = w.gustKt?.let { " G${it.coerceAtMost(99)}" } ?: ""
+        // The whole field is padded to a fixed width by fit(), so no padding inside it.
+        return "wind $d/${kt.coerceAtMost(99)}kt$g"
     }
 
     private fun vis(o: OverlayOptions, w: Altimeter.Weather): String {
