@@ -26,6 +26,7 @@ android {
     }
 
     buildFeatures { buildConfig = true }
+    testOptions { unitTests.isReturnDefaultValues = true }
 
     // Release key lives outside the repo (see ~/.gradle/gradle.properties). Every release must be
     // signed with the same key or Android refuses to install it as an update.
@@ -64,4 +65,5 @@ dependencies {
     implementation(libs.material)
     implementation(libs.androidx.preference.ktx)
     implementation(libs.androidx.recyclerview)
+    testImplementation("junit:junit:4.13.2")
 }
