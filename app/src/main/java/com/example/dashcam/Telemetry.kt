@@ -150,7 +150,9 @@ object Telemetry {
     private val WIDEST = Sample(-48.88888, -128.88888, 18, 36f /* 80 mph / 130 km/h */, 338f /* "NNW 338°" */,
         8888, 38, 38,
         place = "n".repeat(PLACE_MAX), station = "WWWW", qnhHpa = 1028.8f,
-        wx = Altimeter.Weather(-18f, -18f, 250, 28, 38, 10f, true, "BKN", 12000, "-SHRA"))
+        // Present weather is usually empty and usually short ("BR", "-RA"): plan for a short code so it
+        // never claims a line of its own; a longer one (e.g. "+TSRA BR") narrows its line slightly.
+        wx = Altimeter.Weather(-18f, -18f, 250, 28, 38, 10f, true, "BKN", 12000, "-RA"))
 
     /** One item on the stamp. [right] = aligned to the right edge of its line (camera name). */
     data class Field(val text: String, val right: Boolean = false)

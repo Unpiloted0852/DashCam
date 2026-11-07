@@ -53,8 +53,14 @@ class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: Frame
         val key = o to Telemetry.coordDigits()
         layout?.let { if (layoutKey == key) return it }
         layoutKey = key
-        return computeLayout(fill, Telemetry.stampTemplate(o, portrait), bmp.width - 2 * pad, lineH)
-            .also { layout = it; stroke.textScaleX = fill.textScaleX }
+        val template = Telemetry.stampTemplate(o, portrait)
+        return computeLayout(fill, template, bmp.width - 2 * pad, lineH)
+            .also { lay ->
+                layout = lay; stroke.textScaleX = fill.textScaleX
+                EventLog.log("Stamp", "${frameW}x$frameH: ${lay.lines} lines — " + template.mapIndexed { gi, g ->
+                    g.mapIndexed { fi, f -> "${lay.slots[gi][fi].line}:${f.text}" }.joinToString(" | ")
+                }.joinToString(" // "))
+            }
     }
 
     /** [frameWallMs]: accurate wall time at which the frame was captured. */
