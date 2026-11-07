@@ -19,9 +19,12 @@ data class Clip(
     val recording: Boolean get() = Storage.isOpen(uri)
 }
 
-/** One recording slot: the front and rear clips that share a start time. */
-data class ClipPair(val key: String, val front: Clip?, val rear: Clip?) {
-    val clips: List<Clip> get() = listOfNotNull(front, rear)
+/**
+ * One recording slot: the front and rear clips that share a start time, plus the remote camera's
+ * clip ("_remote", recorded by a second phone on the same timeline) when there is one.
+ */
+data class ClipPair(val key: String, val front: Clip?, val rear: Clip?, val remote: Clip? = null) {
+    val clips: List<Clip> get() = listOfNotNull(front, rear, remote)
     val locked: Boolean get() = clips.any { it.locked }
     val recording: Boolean get() = clips.any { it.recording }
     val sizeBytes: Long get() = clips.sumOf { it.sizeBytes }
@@ -34,11 +37,12 @@ data class ClipPair(val key: String, val front: Clip?, val rear: Clip?) {
 /** Finds DashCam clips on every storage volume (internal + SD card) and pairs front/rear. */
 object ClipRepo {
     private const val TAG = "ClipRepo"
-    private val NAME = Regex("""^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})_(front|rear)(?: \(\d+\))?\.mp4$""")
+    private val NAME = Regex("""^(\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2})_(front|rear|remote)(?: \(\d+\))?\.mp4$""")
 
     fun load(ctx: Context): List<ClipPair> {
         val front = HashMap<String, Clip>()
         val rear = HashMap<String, Clip>()
+        val remote = HashMap<String, Clip>()
         for (vol in MediaStore.getExternalVolumeNames(ctx)) {
             val coll = MediaStore.Video.Media.getContentUri(vol)
             try {
@@ -56,13 +60,18 @@ object ClipRepo {
                         val clip = Clip(ContentUris.withAppendedId(coll, c.getLong(0)), name, c.getLong(2),
                             c.getLong(3), c.getString(4) == Storage.LOCKED_DIR || Storage.isLockedName(ctx, name), vol)
                         // Same key on two volumes is unlikely; keep the first seen.
-                        if (m.groupValues[2] == "front") front.putIfAbsent(key, clip) else rear.putIfAbsent(key, clip)
+                        when (m.groupValues[2]) {
+                            "front" -> front.putIfAbsent(key, clip)
+                            "rear" -> rear.putIfAbsent(key, clip)
+                            else -> remote.putIfAbsent(key, clip)
+                        }
                     }
                 }
             } catch (e: Exception) {
                 Log.e(TAG, "query $vol", e)
             }
         }
-        return (front.keys + rear.keys).sortedDescending().map { ClipPair(it, front[it], rear[it]) }
+        return (front.keys + rear.keys + remote.keys).sortedDescending()
+            .map { ClipPair(it, front[it], rear[it], remote[it]) }
     }
 }

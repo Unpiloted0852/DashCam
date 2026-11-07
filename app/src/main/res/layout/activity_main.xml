@@ -34,6 +34,13 @@
             android:text="STANDBY" />
 
         <TextView
+            android:id="@+id/linkStatus"
+            style="@style/Pill"
+            android:layout_marginTop="6dp"
+            android:maxWidth="380dp"
+            android:visibility="gone" />
+
+        <TextView
             android:id="@+id/gpsStatus"
             style="@style/Pill"
             android:layout_marginTop="6dp"

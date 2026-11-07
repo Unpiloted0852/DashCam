@@ -45,6 +45,39 @@ object TrueTime {
     /** Accurate current time in ms since 1970 (UTC). */
     fun nowMs(): Long = atElapsedNs(SystemClock.elapsedRealtimeNanos())
 
+    /** Same as [nowMs] with sub-millisecond precision (for the remote-camera clock exchange). */
+    fun nowMsExact(): Double {
+        val e = SystemClock.elapsedRealtimeNanos()
+        val t = anchorTrueMs ?: return System.currentTimeMillis().toDouble()
+        return t + (e - anchorElapsedNs) / 1e6
+    }
+
+    // ---- remote camera: the main phone is this phone's time source (see RemoteLink)
+
+    private const val LINK_FRESH_MS = 10 * 60_000L
+    @Volatile private var lastLinkElapsed = 0L
+    @Volatile var linkRttMs = -1.0; private set
+
+    /** True while time from the main phone is recent; NTP and GPS then stay out of the way. */
+    fun linkFresh(): Boolean = lastLinkElapsed != 0L && SystemClock.elapsedRealtime() - lastLinkElapsed < LINK_FRESH_MS
+
+    /**
+     * Best sample of a ping exchange: the main phone's clock read [trueMs] at about [elapsedNs] here,
+     * measured with round trip [rttMs]. [peerUncertaintyMs] is how sure the main phone is of its own time.
+     */
+    fun onLinkSample(trueMs: Double, elapsedNs: Long, rttMs: Double, peerUncertaintyMs: Long, peerSource: String) {
+        val wasFresh = linkFresh()
+        val before = if (anchorTrueMs != null) nowMsExact() else null
+        anchorTrueMs = trueMs; anchorElapsedNs = elapsedNs
+        uncertaintyMs = maxOf(1L, (rttMs / 2).toLong()) + maxOf(0L, peerUncertaintyMs)
+        source = "main phone ($peerSource)"
+        linkRttMs = rttMs
+        lastLinkElapsed = SystemClock.elapsedRealtime(); lastSyncElapsed = lastLinkElapsed
+        val step = before?.let { String.format(Locale.US, "%+.1f", trueMs + (SystemClock.elapsedRealtimeNanos() - elapsedNs) / 1e6 - it) } ?: "n/a"
+        if (!wasFresh) EventLog.log("Time", String.format(Locale.US,
+            "synced from main phone, round trip %.1f ms, step %s ms; phone clock off by %d ms", rttMs, step, phoneClockErrorMs()))
+    }
+
     /** Accurate wall time at a given elapsedRealtimeNanos instant (e.g. when a frame was captured). */
     fun atElapsedNs(elapsedNs: Long): Long {
         val t = anchorTrueMs ?: return System.currentTimeMillis() - (SystemClock.elapsedRealtimeNanos() - elapsedNs) / 1_000_000
@@ -58,6 +91,7 @@ object TrueTime {
 
     private fun syncIfDue() {
         val now = SystemClock.elapsedRealtime()
+        if (linkFresh()) return
         if (lastNtpElapsed != 0L && now - lastNtpElapsed < RESYNC_MS) return
         var best: Sample? = null
         for (host in SERVERS) {
@@ -68,6 +102,7 @@ object TrueTime {
             if (best != null && best!!.rttMs < 150) break   // good enough; skip the other servers
         }
         val b = best ?: return
+        if (linkFresh()) return
         anchorTrueMs = b.trueMs; anchorElapsedNs = b.elapsedNs
         uncertaintyMs = maxOf(1L, (b.rttMs / 2).toLong())
         source = "NTP ${b.host}"
@@ -83,7 +118,7 @@ object TrueTime {
         if (loc.provider != "gps" || loc.time <= 0) return
         val now = SystemClock.elapsedRealtime()
         val ntpFresh = lastNtpElapsed != 0L && now - lastNtpElapsed < 2 * RESYNC_MS
-        if (ntpFresh) return
+        if (ntpFresh || linkFresh()) return
         val wasUnsynced = anchorTrueMs == null
         anchorTrueMs = loc.time.toDouble(); anchorElapsedNs = loc.elapsedRealtimeNanos
         uncertaintyMs = 50; source = "GPS satellites"; lastSyncElapsed = now

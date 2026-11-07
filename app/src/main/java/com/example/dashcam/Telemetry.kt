@@ -12,6 +12,7 @@ import android.os.Handler
 import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
+import org.json.JSONObject
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -73,6 +74,55 @@ object Telemetry {
         lm = null
     }
 
+    // ---- remote camera: stamp data relayed from the main phone once per second
+
+    private const val RELAY_FRESH_MS = 3_000L
+    @Volatile private var relay: Sample? = null
+    @Volatile private var relayElapsed = 0L
+
+    /** The main phone's live stamp data, if it arrived in the last few seconds. */
+    fun relayed(): Sample? = relay?.takeIf { SystemClock.elapsedRealtime() - relayElapsed <= RELAY_FRESH_MS }
+
+    /** On the main phone: what the remote camera should stamp. */
+    fun relayJson(): JSONObject {
+        val v = localSample()
+        val o = JSONObject()
+        fun put(k: String, x: Any?) { if (x != null) o.put(k, x) }
+        put("lat", v.lat); put("lon", v.lon); put("acc", v.accM); put("mps", v.mps?.toDouble())
+        put("brg", v.bearing?.toDouble()); put("alt", v.altFt); o.put("su", v.satsUsed); o.put("sv", v.satsVisible)
+        put("place", v.place); put("stn", v.station); put("qnh", v.qnhHpa?.toDouble())
+        val w = v.wx
+        val wx = JSONObject()
+        fun putW(k: String, x: Any?) { if (x != null) wx.put(k, x) }
+        putW("t", w.tempC?.toDouble()); putW("d", w.dewC?.toDouble()); putW("wd", w.windDir); putW("ws", w.windKt)
+        putW("wg", w.gustKt); putW("vis", w.visMi?.toDouble()); wx.put("visp", w.visPlus); putW("cov", w.cloudCover)
+        putW("base", w.cloudBaseFt); putW("wx", w.wx)
+        o.put("w", wx)
+        Altimeter.metar?.let { o.put("mlat", it.lat).put("mlon", it.lon).put("mobs", it.obsEpochSec) }
+        return o
+    }
+
+    /** On the remote camera: stamp data from the main phone arrived. */
+    fun onRelay(o: JSONObject) {
+        fun d(k: String) = if (o.has(k) && !o.isNull(k)) o.optDouble(k).takeIf { !it.isNaN() } else null
+        fun i(k: String) = if (o.has(k) && !o.isNull(k)) o.optInt(k) else null
+        fun str(k: String) = if (o.has(k) && !o.isNull(k)) o.optString(k) else null
+        val w = o.optJSONObject("w") ?: JSONObject()
+        fun wd(k: String) = if (w.has(k) && !w.isNull(k)) w.optDouble(k).takeIf { !it.isNaN() }?.toFloat() else null
+        fun wi(k: String) = if (w.has(k) && !w.isNull(k)) w.optInt(k) else null
+        fun ws(k: String) = if (w.has(k) && !w.isNull(k)) w.optString(k) else null
+        val wx = Altimeter.Weather(wd("t"), wd("d"), wi("wd"), wi("ws"), wi("wg"), wd("vis"), w.optBoolean("visp"),
+            ws("cov"), wi("base"), ws("wx"))
+        val s = Sample(d("lat"), d("lon"), i("acc"), d("mps")?.toFloat(), d("brg")?.toFloat(), i("alt"),
+            o.optInt("su"), o.optInt("sv"), str("place"), str("stn"), d("qnh")?.toFloat(), wx)
+        relay = s; relayElapsed = SystemClock.elapsedRealtime()
+        // Keep the weather and QNH for when the link drops (this phone may have no internet).
+        val stn = s.station; val q = s.qnhHpa
+        if (stn != null && q != null) Altimeter.adoptRelayed(stn, q, d("mlat") ?: s.lat ?: 0.0, d("mlon") ?: s.lon ?: 0.0,
+            o.optLong("mobs"), wx)
+        version++
+    }
+
     /** Latest fix if it is recent enough to trust, else null. */
     fun freshFix(): Location? {
         val l = location ?: return null
@@ -82,6 +132,7 @@ object Telemetry {
 
     /** Ground speed in m/s from a fresh fix, null if unknown. Tiny GPS jitter is shown as 0. */
     fun speedMps(): Float? {
+        relayed()?.let { r -> return r.mps }
         val l = freshFix() ?: return null
         if (!l.hasSpeed()) return null
         return if (l.speed < 0.4f) 0f else l.speed
@@ -123,7 +174,15 @@ object Telemetry {
         val wx: Altimeter.Weather = Altimeter.Weather(),
     )
 
-    private fun currentSample(): Sample {
+    /** Position for clip metadata: relayed from the main phone, else this phone's GPS. */
+    fun latLon(): Pair<Double, Double>? {
+        relayed()?.let { r -> if (r.lat != null && r.lon != null) return r.lat to r.lon }
+        return freshFix()?.let { it.latitude to it.longitude }
+    }
+
+    private fun currentSample(): Sample = relayed() ?: localSample()
+
+    private fun localSample(): Sample {
         val fix = freshFix()
         val mps = speedMps()
         val m = Altimeter.metar

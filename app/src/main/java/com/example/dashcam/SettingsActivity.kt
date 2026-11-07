@@ -58,13 +58,19 @@ class SettingsActivity : AppCompatActivity() {
                 pref.summaryProvider = null
                 pref.summary = "Tap to allow Bluetooth access and pick your car"
                 pref.setOnPreferenceClickListener { btPerm.launch(perm); true }
+                findPreference<ListPreference>("link_device")?.apply {
+                    entries = arrayOf("None"); entryValues = arrayOf("")
+                    summaryProvider = null
+                    summary = "Tap to allow Bluetooth access and pick the other phone"
+                    setOnPreferenceClickListener { btPerm.launch(perm); true }
+                }
+                updateLinkPrefs(findPreference<ListPreference>("link_role")?.value ?: "normal")
                 return
             }
             pref.onPreferenceClickListener = null
-            val bonded = try {
-                requireContext().getSystemService(BluetoothManager::class.java)?.adapter?.bondedDevices.orEmpty()
-                    .sortedBy { it.name ?: it.address }
-            } catch (_: SecurityException) { emptyList() }
+            val bonded = RemoteLink.pairedDevices(requireContext())
+            findPreference<ListPreference>("link_device")?.onPreferenceClickListener = null
+            setupLinkDeviceList(bonded.map { (it.name ?: it.address) to it.address })
             pref.entries = (listOf("Off") + bonded.map { it.name ?: it.address }).toTypedArray()
             pref.entryValues = (listOf("") + bonded.map { it.address }).toTypedArray()
             pref.summaryProvider = Preference.SummaryProvider<ListPreference> { p ->
@@ -75,6 +81,9 @@ class SettingsActivity : AppCompatActivity() {
 
         override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
             setPreferencesFromResource(R.xml.preferences, rootKey)
+            findPreference<ListPreference>("link_role")?.setOnPreferenceChangeListener { _, v ->
+                updateLinkPrefs(v.toString()); true
+            }
             findPreference<ListPreference>("main_lens")?.let { pref ->
                 val lenses = Lenses.backLenses(requireContext())
                 val widest = lenses.minByOrNull { it.relative }
@@ -123,6 +132,27 @@ class SettingsActivity : AppCompatActivity() {
             findPreference<androidx.preference.Preference>("battery_opt")?.setOnPreferenceClickListener {
                 BatteryHelper.request(requireActivity()); true
             }
+        }
+
+        /** Paired phones for the remote-camera link (same Bluetooth permission as the car list). */
+        private fun setupLinkDeviceList(bonded: List<Pair<String, String>>) {
+            val pref = findPreference<ListPreference>("link_device") ?: return
+            pref.entries = (listOf("None") + bonded.map { it.first }).toTypedArray()
+            pref.entryValues = (listOf("") + bonded.map { it.second }).toTypedArray()
+            pref.summaryProvider = Preference.SummaryProvider<ListPreference> { p ->
+                if (p.value.isNullOrEmpty()) "Pick the other phone (pair them first in Android's Bluetooth settings)"
+                else p.entry ?: p.value
+            }
+            updateLinkPrefs(findPreference<ListPreference>("link_role")?.value ?: "normal")
+        }
+
+        private fun updateLinkPrefs(role: String) {
+            findPreference<Preference>("link_device")?.isVisible = role != "normal"
+            findPreference<Preference>("remote_camera")?.isVisible = role == "remote"
+            // A remote camera records one camera and takes its stamp/clip settings from the main phone.
+            findPreference<Preference>("cabin_enabled")?.isEnabled = role != "remote"
+            findPreference<Preference>("cabin_enabled")?.summary = if (role == "remote")
+                "Off while this phone is a remote camera" else "Needs a phone that can run both cameras at once"
         }
 
         override fun onResume() {

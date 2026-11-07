@@ -103,8 +103,9 @@ class ClipsActivity : AppCompatActivity() {
         if (p.recording) return
         startActivity(Intent(this, PlayerActivity::class.java)
             .putExtra(PlayerActivity.EXTRA_KEY, p.key)
-            .putExtra(PlayerActivity.EXTRA_FRONT, p.front?.uri?.toString())
-            .putExtra(PlayerActivity.EXTRA_REAR, p.rear?.uri?.toString()))
+            // Two views for now: a remote camera clip fills whichever slot is free.
+            .putExtra(PlayerActivity.EXTRA_FRONT, (p.front ?: p.remote)?.uri?.toString())
+            .putExtra(PlayerActivity.EXTRA_REAR, (p.rear ?: p.remote?.takeIf { p.front != null })?.uri?.toString()))
     }
 
     private fun menuFor(v: View, p: ClipPair) {
@@ -158,15 +159,17 @@ class ClipsActivity : AppCompatActivity() {
             h.title.text = if (start != null) DateUtils.formatDateTime(this@ClipsActivity, start,
                 DateUtils.FORMAT_SHOW_DATE or DateUtils.FORMAT_SHOW_TIME or DateUtils.FORMAT_SHOW_WEEKDAY or
                     DateUtils.FORMAT_ABBREV_ALL) else p.key
-            val cams = listOfNotNull(p.front?.let { "Front" }, p.rear?.let { "Rear" }).joinToString(" + ")
+            val cams = listOfNotNull(p.front?.let { "Front" }, p.rear?.let { "Rear" }, p.remote?.let { "Remote" })
+                .joinToString(" + ")
             val where = if (p.clips.any { it.volume != MediaStore.VOLUME_EXTERNAL_PRIMARY }) " · SD card" else ""
             h.subtitle.text = if (p.recording) "Recording… · $cams$where"
                 else "${fmtDuration(p.durationMs)} · ${fmtSize(p.sizeBytes)} · $cams$where"
             h.badge.text = when { p.recording -> "●"; p.locked -> "🔒"; else -> "" }
             h.badge.setTextColor(if (p.recording) 0xFFE53935.toInt() else h.title.currentTextColor)
-            loadThumb(h.front, if (p.recording) null else p.front?.uri)
-            loadThumb(h.rear, if (p.recording) null else p.rear?.uri)
-            h.rear.visibility = if (p.rear != null) View.VISIBLE else View.INVISIBLE
+            val second = p.rear ?: p.remote?.takeIf { p.front != null }
+            loadThumb(h.front, if (p.recording) null else (p.front ?: p.remote)?.uri)
+            loadThumb(h.rear, if (p.recording) null else second?.uri)
+            h.rear.visibility = if (second != null) View.VISIBLE else View.INVISIBLE
             h.itemView.alpha = if (p.recording) 0.6f else 1f
             h.itemView.setOnClickListener { if (p.recording) menuFor(it, p) else open(p) }
             h.itemView.setOnLongClickListener { menuFor(it, p); true }

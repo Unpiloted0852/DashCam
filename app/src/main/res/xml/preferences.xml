@@ -1,6 +1,19 @@
 <?xml version="1.0" encoding="utf-8"?>
 <PreferenceScreen xmlns:app="http://schemas.android.com/apk/res-auto">
 
+    <PreferenceCategory app:title="Remote camera (second phone)">
+        <ListPreference app:key="link_role" app:title="This phone is"
+            app:entries="@array/link_role_labels" app:entryValues="@array/link_role_values"
+            app:defaultValue="normal" app:useSimpleSummaryProvider="true" />
+        <ListPreference app:key="link_device" app:title="Other phone"
+            app:defaultValue="" />
+        <ListPreference app:key="remote_camera" app:title="Camera to record (remote camera)"
+            app:entries="@array/remote_camera_labels" app:entryValues="@array/remote_camera_values"
+            app:defaultValue="back" app:useSimpleSummaryProvider="true" />
+        <Preference app:key="link_help" app:selectable="false" app:title="How it works"
+            app:summary="Pair the two phones once in Android's Bluetooth settings, then pick each other here. Both phones record their own clips (nothing is lost if the link drops); the main phone starts and stops the remote, locks clips on both, and gives it the time, GPS and weather for its stamp. Open DashCam once on the remote after switching it on; it can then sit with the screen off." />
+    </PreferenceCategory>
+
     <PreferenceCategory app:title="Recording">
         <ListPreference app:key="segment_minutes" app:title="Clip length"
             app:entries="@array/segment_labels" app:entryValues="@array/segment_values"

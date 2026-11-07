@@ -14,7 +14,7 @@ import java.util.Date
 import java.util.Locale
 
 /** Shared segment timeline so front and rear clips get identical names and boundaries. */
-class SegmentClock(private val startMs: Long, private val lengthMs: Long) {
+class SegmentClock(val startMs: Long, val lengthMs: Long) {
     fun indexNow(): Long = (TrueTime.nowMs() - startMs).coerceAtLeast(0) / lengthMs
     fun fileName(index: Long, tag: String): String {
         val f = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US)
@@ -31,7 +31,7 @@ class SegmentMuxer(
     private val tag: String,
     private val volume: String,
     @Volatile var expectAudio: Boolean,
-    private val clock: SegmentClock,
+    @Volatile private var clock: SegmentClock,
     private val onClosed: (uri: Uri, locked: Boolean, tag: String) -> Unit,
 ) {
     private var videoFormat: MediaFormat? = null
@@ -52,6 +52,11 @@ class SegmentMuxer(
 
     val currentUri: Uri? @Synchronized get() = uri
 
+    private var forceRoll = false
+
+    /** Follow a new timeline (the main phone's): the current clip ends at the next key frame. */
+    @Synchronized fun switchClock(c: SegmentClock) { clock = c; forceRoll = true }
+
     @Synchronized fun setVideoFormat(f: MediaFormat) { videoFormat = f }
     @Synchronized fun setAudioFormat(f: MediaFormat) { audioFormat = f }
 
@@ -60,7 +65,7 @@ class SegmentMuxer(
         val key = info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0
         if (key) {
             val idx = clock.indexNow()
-            if (muxer == null || idx != segIndex) {
+            if (muxer == null || idx != segIndex || forceRoll) {
                 // Give the audio encoder up to 2 s to report its format so the first file has sound.
                 val holdForAudio = muxer == null && expectAudio && audioFormat == null && run {
                     val now = SystemClock.elapsedRealtime()
@@ -109,6 +114,7 @@ class SegmentMuxer(
 
 
     private fun roll(idx: Long) {
+        forceRoll = false
         closeCurrent()
         val vf = videoFormat ?: return
         var created: Uri? = null
@@ -116,7 +122,7 @@ class SegmentMuxer(
             val (u, fd) = Storage.create(ctx, volume, clock.fileName(idx, tag))
             created = u
             val m = MediaMuxer(fd.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            Telemetry.freshFix()?.let { m.setLocation(it.latitude.toFloat(), it.longitude.toFloat()) }
+            Telemetry.latLon()?.let { (la, lo) -> m.setLocation(la.toFloat(), lo.toFloat()) }
             vTrack = m.addTrack(vf)
             aTrack = audioFormat?.let { m.addTrack(it) } ?: -1
             m.start()

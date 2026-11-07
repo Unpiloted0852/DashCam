@@ -34,6 +34,7 @@ object Updater {
     /** Called when the main screen opens; quiet unless an update exists. */
     fun checkInBackground(a: Activity, isRecording: () -> Boolean) {
         val prefs = PreferenceManager.getDefaultSharedPreferences(a)
+        if (!BuildConfig.UPDATES_ENABLED) return
         if (!prefs.getBoolean("auto_update_check", true)) return
         val last = prefs.getLong("update_last_check", 0)
         if (System.currentTimeMillis() - last < CHECK_EVERY_MS) return
@@ -52,6 +53,9 @@ object Updater {
 
     /** "Check for updates" button: always reports the result. */
     fun checkNow(a: Activity) {
+        if (!BuildConfig.UPDATES_ENABLED) {
+            Toast.makeText(a, "Experimental build: updates are off", Toast.LENGTH_LONG).show(); return
+        }
         Toast.makeText(a, "Checking for updates…", Toast.LENGTH_SHORT).show()
         Thread {
             val r = fetchLatest()

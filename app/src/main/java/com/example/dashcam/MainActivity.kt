@@ -39,6 +39,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var cabinPreview: TextureView
     private lateinit var recStatus: TextView
     private lateinit var gpsStatus: TextView
+    private lateinit var linkStatus: TextView
     private lateinit var focusStatus: TextView
     private lateinit var warning: TextView
     private lateinit var speedMph: TextView
@@ -85,6 +86,7 @@ class MainActivity : AppCompatActivity() {
         cabinPreview = findViewById(R.id.cabinPreview)
         recStatus = findViewById(R.id.recStatus)
         gpsStatus = findViewById(R.id.gpsStatus)
+        linkStatus = findViewById(R.id.linkStatus)
         focusStatus = findViewById(R.id.focusStatus)
         warning = findViewById(R.id.warning)
         speedMph = findViewById(R.id.speedMph)
@@ -98,8 +100,8 @@ class MainActivity : AppCompatActivity() {
 
         recBtn.setOnClickListener {
             val s = service ?: return@setOnClickListener
-            if (s.recording) s.stopRecording()
-            else { s.startRecording(); BatteryHelper.requestOnce(this) }
+            if (s.recording) s.userStop()
+            else { s.userStart(); BatteryHelper.requestOnce(this) }
         }
         lockBtn.setOnClickListener { service?.lockClip() }
         focusBtn.setOnClickListener { settings.setMainFarFocus(!settings.mainFocus.far) }
@@ -195,6 +197,7 @@ class MainActivity : AppCompatActivity() {
         val widthDp = resources.configuration.screenWidthDp
         warning.maxWidth = dp(if (portrait) (widthDp - 113 - 48).coerceAtLeast(160) else 380)
         gpsStatus.maxWidth = warning.maxWidth
+        linkStatus.maxWidth = warning.maxWidth
         focusStatus.maxWidth = warning.maxWidth
     }
 
@@ -207,6 +210,7 @@ class MainActivity : AppCompatActivity() {
         )
         if (settings.endOnWalking) perms += Manifest.permission.ACTIVITY_RECOGNITION
         if (Build.VERSION.SDK_INT >= 33) perms += Manifest.permission.POST_NOTIFICATIONS
+        if (Build.VERSION.SDK_INT >= 31 && settings.linkRole != "normal") perms += Manifest.permission.BLUETOOTH_CONNECT
         val missing = perms.filter { !hasPerm(it) }
         if (missing.isNotEmpty()) permLauncher.launch(missing.toTypedArray())
     }
@@ -271,7 +275,10 @@ class MainActivity : AppCompatActivity() {
             else -> { speedMph.text = mphText; speedKph.text = kphText; speedKph.visibility = View.VISIBLE }
         }
         val fix = Telemetry.freshFix()
-        gpsStatus.text = if (fix != null)
+        val relay = Telemetry.relayed()
+        gpsStatus.text = if (relay != null)
+            "GPS via main phone" + (relay.accM?.let { " ±$it m" } ?: ": no fix") + " · ${relay.satsUsed} sats"
+        else if (fix != null)
             "GPS ±${fix.accuracy.roundToInt()} m · ${Telemetry.satsUsed} sats"
         else "GPS: searching (${Telemetry.satsUsed}/${Telemetry.satsVisible})"
         val alt = Altimeter.altitudeFt()
@@ -290,6 +297,10 @@ class MainActivity : AppCompatActivity() {
             recStatus.setTextColor(if (secs % 2 == 0L) 0xFFFF5252.toInt() else 0xFFFFFFFF.toInt())
         }
         s?.muxerError()?.let { showWarning(it) }
+        val ls = s?.linkStatusText()
+        linkStatus.visibility = if (ls == null) View.GONE else View.VISIBLE
+        linkStatus.text = ls
+        linkStatus.setTextColor(if (ls?.startsWith("⚠") == true) 0xFFFFCC80.toInt() else 0xFFFFFFFF.toInt())
         val f = s?.mainCam?.focusStatus
         focusStatus.visibility = if (f.isNullOrEmpty()) View.GONE else View.VISIBLE
         focusStatus.text = "Front focus: $f" + (s?.cabinCam?.focusStatus?.let { "  ·  Rear: $it" } ?: "")

@@ -500,6 +500,16 @@ class CameraPipeline(
 
     fun lockClip() { muxer?.lock() }
 
+    /** Remote camera: move onto the main phone's segment timeline without stopping the encoder. */
+    fun switchClock(c: SegmentClock) {
+        val m = muxer ?: return
+        clock = c
+        m.switchClock(c)
+        try {
+            encoder?.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) })
+        } catch (_: Exception) {}
+    }
+
     private class EncoderCallback(val m: SegmentMuxer, val eos: CountDownLatch) : MediaCodec.Callback() {
         override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {}
         override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) = m.setVideoFormat(format)

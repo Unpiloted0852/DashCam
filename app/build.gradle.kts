@@ -23,6 +23,8 @@ android {
         versionName = appVersion
         // Where the in-app updater looks for new releases.
         buildConfigField("String", "UPDATE_REPO", "\"Unpiloted0852/DashCam\"")
+        buildConfigField("boolean", "UPDATES_ENABLED", "true")
+        manifestPlaceholders["appLabel"] = "DashCam"
     }
 
     buildFeatures { buildConfig = true }
@@ -42,6 +44,15 @@ android {
     }
 
     buildTypes {
+        // Experimental builds install next to the real app (own package, debug-signed) and never
+        // self-update: the updater would replace them with whatever the latest public release is.
+        create("exp") {
+            initWith(getByName("debug"))
+            applicationIdSuffix = ".exp"
+            versionNameSuffix = "-exp"
+            buildConfigField("boolean", "UPDATES_ENABLED", "false")
+            manifestPlaceholders["appLabel"] = "DashCam exp"
+        }
         release {
             isMinifyEnabled = false
             if (providers.gradleProperty("DASHCAM_STORE_FILE").isPresent) {

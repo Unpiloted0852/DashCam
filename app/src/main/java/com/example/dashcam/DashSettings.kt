@@ -16,7 +16,7 @@ class DashSettings(ctx: Context) {
     /** Road-camera lens: "widest" (default), "main", or a key from Lenses.backLenses. */
     val mainLens: String get() = str("main_lens", "widest")
     val mainSize: Size get() = sizeFor(str("main_resolution", "1080"))
-    val cabinEnabled: Boolean get() = bool("cabin_enabled", true)
+    val cabinEnabled: Boolean get() = bool("cabin_enabled", true) && !isRemote
     val cabinSize: Size get() = sizeFor(str("cabin_resolution", "720"))
     private val bitsPerPixel: Float get() = str("quality", "0.15").toFloat()
     val audioEnabled: Boolean get() = bool("audio_enabled", true)
@@ -41,6 +41,50 @@ class DashSettings(ctx: Context) {
     val endBluetoothAddress: String get() = str("auto_stop_bt", "")
     val autoRecord: Boolean get() = bool("auto_record", false)
     val keepScreenOn: Boolean get() = bool("keep_screen_on", true)
+
+    /** Remote camera feature: "normal", "primary" (has a remote camera) or "remote" (is one). */
+    val linkRole: String get() = str("link_role", "normal")
+    val isRemote: Boolean get() = linkRole == "remote"
+    val isPrimary: Boolean get() = linkRole == "primary"
+    /** Bluetooth address of the other phone. */
+    val linkDevice: String get() = str("link_device", "")
+    /** Remote camera: "back" (uses the Lens setting) or "selfie". */
+    val remoteCamera: String get() = str("remote_camera", "back")
+
+    /** Mirrored main phone -> remote camera (settings that don't depend on how a phone is mounted). */
+    fun mirroredJson(): org.json.JSONObject {
+        val o = org.json.JSONObject()
+        for ((k, v) in p.all) {
+            if (k !in MIRRORED_KEYS) continue
+            when (v) {
+                is Set<*> -> o.put(k, org.json.JSONObject().put("set", org.json.JSONArray(v.map { it.toString() })))
+                else -> o.put(k, v)
+            }
+        }
+        return o
+    }
+
+    /** Remote camera: apply the main phone's settings. Returns the keys that changed. */
+    fun applyMirrored(o: org.json.JSONObject): List<String> {
+        val e = p.edit()
+        val changed = ArrayList<String>()
+        for (k in o.keys()) {
+            if (k !in MIRRORED_KEYS) continue
+            val v = o.get(k)
+            val cur = p.all[k]
+            when (v) {
+                is Boolean -> if (cur != v) { e.putBoolean(k, v); changed += k }
+                is String -> if (cur != v) { e.putString(k, v); changed += k }
+                is org.json.JSONObject -> {
+                    val arr = v.optJSONArray("set") ?: continue
+                    val set = (0 until arr.length()).map { arr.getString(it) }.toSet()
+                    if (cur != set) { e.putStringSet(k, set); changed += k }
+                }
+            }
+        }
+        if (changed.isNotEmpty()) e.apply()
+        return changed
+    }
 
     private fun set(key: String, def: Set<String>): Set<String> = p.getStringSet(key, def) ?: def
 
@@ -81,7 +125,14 @@ class DashSettings(ctx: Context) {
         /** Changing these needs the cameras to be reopened. */
         const val STOP_SPEED_MPS = 1.0f  // ~2 mph: GPS jitter while parked stays below this
         val DEFAULT_WEATHER = setOf("station", "temp", "rh", "wind", "clouds")
-        val RESTART_KEYS = setOf("main_lens", "main_resolution", "cabin_resolution", "cabin_enabled")
+        val RESTART_KEYS = setOf("main_lens", "main_resolution", "cabin_resolution", "cabin_enabled",
+            "link_role", "remote_camera")
+        val LINK_KEYS = setOf("link_role", "link_device")
+        val MIRRORED_KEYS = setOf("segment_minutes", "quality", "audio_enabled",
+            "auto_stop_walk", "auto_stop_unplug", "auto_stop_minutes",
+            "stamp_size", "stamp_clock", "use_utc", "overlay_label", "show_coords", "stamp_accuracy", "stamp_place",
+            "stamp_speed", "stamp_heading", "stamp_altitude", "stamp_alt_unit", "stamp_sats", "stamp_weather",
+            "stamp_weather_fields", "stamp_temp_unit")
     }
 }
 

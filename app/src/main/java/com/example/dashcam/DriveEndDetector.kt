@@ -30,6 +30,8 @@ class DriveEndDetector(
     private val ctx: Context,
     private val settings: DashSettings,
     private val onEnd: (reason: String) -> Unit,
+    /** Remote camera while linked: the main phone decides when the drive ends; only keep watching. */
+    private val suppressed: () -> Boolean = { false },
 ) : SensorEventListener {
 
     companion object {
@@ -148,6 +150,11 @@ class DriveEndDetector(
         }
         if (charging && hasMoved) chargedWhileDriving = true
         if (!hasMoved) { countdown = null; return }
+        if (suppressed()) {
+            // Timers start afresh if the link drops, e.g. once parked out of the main phone's range.
+            slowSince = 0; stillSince = 0; pending = null; countdown = null
+            return
+        }
         if (slowSince == 0L) slowSince = now
         if (speed != null && speed < STILL_MPS) { if (stillSince == 0L) stillSince = now } else if (speed != null) stillSince = 0
 

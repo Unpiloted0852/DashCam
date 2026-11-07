@@ -117,6 +117,15 @@ object Altimeter : SensorEventListener {
 
     override fun onAccuracyChanged(s: Sensor?, a: Int) {}
 
+    /** Remote camera: use the main phone's METAR (this phone may have no internet). */
+    fun adoptRelayed(station: String, qnhHpa: Float, lat: Double, lon: Double, obsEpochSec: Long, wx: Weather) {
+        val m = metar
+        if (m != null && m.station == station && m.obsEpochSec == obsEpochSec && m.weather == wx) return
+        val at = Location("relay").apply { latitude = lat; longitude = lon }
+        metar = Metar(station, qnhHpa, lat, lon, obsEpochSec, SystemClock.elapsedRealtime(), at, wx)
+        if (m?.station != station || m.obsEpochSec != obsEpochSec) EventLog.log("METAR", "$station from main phone")
+    }
+
     /** Altitude in feet, or null if there's no barometer reading. */
     fun altitudeFt(): Float? {
         val p = pressureHpa ?: return null
