@@ -6,12 +6,14 @@ Android dashcam that records the road (main/rear-facing camera) and the cabin/re
 ## Features
 - **Dual camera** front + rear simultaneously (needs a phone that supports concurrent cameras;
   falls back to front-only with an on-screen notice if not).
-- **Configurable stamp:** date/time (24 h or 12 h, local or UTC), camera label, custom text, and
-  each of GPS position ± accuracy, speed (mph / km/h / both), heading, altitude (ft / m), satellite
-  count, optional place name (road and town), and an optional weather line from the nearest METAR
-  (airport, temperature, dew point, humidity, wind/gusts, visibility, cloud base, rain/snow/fog,
-  altimeter setting). Small / normal / large text. Every field has a fixed width so the stamp never
-  changes shape. GPS position is also written into the MP4 metadata.
+- **Configurable stamp:** a compact block at the bottom of the frame, kept small so the video stays
+  clear: date/time (24 h or 12 h, local or UTC, zone shown as CET, UTC+1, both or not at all),
+  camera name, custom text, and each of GPS position ± accuracy, speed (mph / km/h / both), heading,
+  altitude (ft / m), satellite count, optional place name (road and town), and an optional weather
+  line from the nearest METAR (airport, temperature, dew point, humidity, wind/gusts, visibility,
+  cloud base, rain/snow/fog, altimeter setting). Small / normal / large text. Line breaks are fixed
+  per setup, so the stamp keeps its shape while driving. GPS position is also written into the MP4
+  metadata.
 - **Accurate time:** like "atomic clock" apps, syncs with internet time servers (NTP, ±~10 ms,
   every 15 min) and falls back to GPS satellite time with no data. The stamp shows each frame's
   capture time, independent of the phone's own clock.

@@ -139,179 +139,203 @@ object Telemetry {
         )
     }
 
-    private const val PLACE_W = 32
-    private const val WX_W = 8
+    /** Longest place name shown; longer names are shortened with "…". */
+    private const val PLACE_MAX = 34
     private val WEATHER_ORDER = listOf("station", "temp", "dew", "rh", "wind", "vis", "clouds", "wx", "qnh")
 
-    /** Widest possible values, used once to size the stamp so it never changes shape. */
-    private val WIDEST = Sample(-89.999999, -179.999999, 999, 99f, 359f, -9999, 99, 99,
-        place = "W".repeat(PLACE_W), station = "WWWW", qnhHpa = 1050f,
-        wx = Altimeter.Weather(-40f, -40f, 360, 99, 99, 10f, true, "OVC", 99999, "W".repeat(WX_W)))
+    /**
+     * Realistic long values (not extremes). Line breaks are decided once from these, so the number of
+     * lines never changes while driving; a live line that ends up longer is narrowed slightly instead.
+     */
+    private val WIDEST = Sample(-48.88888, -128.88888, 18, 36f /* 80 mph / 130 km/h */, 338f /* "NNW 338°" */,
+        8888, 38, 38,
+        place = "n".repeat(PLACE_MAX), station = "WWWW", qnhHpa = 1028.8f,
+        wx = Altimeter.Weather(-18f, -18f, 250, 28, 38, 10f, true, "BKN", 12000, "-SHRA"))
 
-    /** Lines burned into the video (how many depends on the options and the frame's shape). */
-    fun overlayLines(o: OverlayOptions, portrait: Boolean, wallMs: Long = TrueTime.nowMs(),
-                     maxChars: Int = Int.MAX_VALUE): List<String> =
-        wrap(format(o, portrait, currentSample(), wallMs), maxChars)
+    /** One item on the stamp. [right] = aligned to the right edge of its line (camera name). */
+    data class Field(val text: String, val right: Boolean = false)
 
-    /** Same layout filled with the widest possible values. */
-    fun overlayTemplate(o: OverlayOptions, portrait: Boolean, maxChars: Int = Int.MAX_VALUE): List<String> =
-        wrap(format(o, portrait, WIDEST, TrueTime.nowMs()), maxChars)
+    /** The stamp as groups of fields; each group starts a new line and wraps if needed. */
+    fun stampFields(o: OverlayOptions, portrait: Boolean, wallMs: Long = TrueTime.nowMs()): List<List<Field>> =
+        build(o, portrait, currentSample(), wallMs, widest = false)
+
+    /** Same structure with the widest values, for reserving space. Always the same shape as [stampFields]. */
+    fun stampTemplate(o: OverlayOptions, portrait: Boolean): List<List<Field>> =
+        build(o, portrait, templateSample(), TrueTime.nowMs(), widest = true)
 
     /**
-     * Lay out groups of fields as lines of at most [maxChars] characters, breaking only between
-     * whole fields. Fields have fixed widths, so the breaks never move from second to second.
+     * Number of whole-degree digits in the current latitude/longitude (e.g. 2 and 1 for 50.9°N 6.0°E).
+     * The layout plans for these, so coordinates don't reserve room for "128°W" in Europe.
      */
-    private fun wrap(groups: List<List<String>>, maxChars: Int): List<String> {
-        val out = ArrayList<String>()
-        for (fields in groups) {
-            var line = ""
-            for (f in fields) {
-                line = when {
-                    line.isEmpty() -> f
-                    line.length + 2 + f.length <= maxChars -> "$line  $f"
-                    else -> { out.add(line); f }
-                }
-            }
-            if (line.isNotEmpty()) out.add(line)
-        }
-        return out
+    fun coordDigits(): Pair<Int, Int>? = freshFix()?.let {
+        abs(it.latitude).toInt().toString().length to abs(it.longitude).toInt().toString().length
     }
 
-    /** Fit [s] to exactly [w] characters so a field never changes width. */
-    private fun fit(s: String, w: Int): String = if (s.length > w) s.take(w - 1) + "…" else s.padEnd(w)
+    private fun templateSample(): Sample {
+        val d = coordDigits() ?: return WIDEST
+        fun eights(digits: Int) = ("8".repeat(digits) + ".88888").toDouble()
+        return Sample(-eights(d.first), -eights(d.second), WIDEST.accM, WIDEST.mps, WIDEST.bearing, WIDEST.altFt,
+            WIDEST.satsUsed, WIDEST.satsVisible, WIDEST.place, WIDEST.station, WIDEST.qnhHpa, WIDEST.wx)
+    }
 
-    private fun n3(x: Int?): String = x?.let { String.format(Locale.US, "%3d", it) } ?: "---"
+    /** Plain text lines (for logs and tests). */
+    fun overlayLines(o: OverlayOptions, portrait: Boolean, wallMs: Long = TrueTime.nowMs()): List<String> =
+        stampFields(o, portrait, wallMs).map { g -> g.joinToString("  ") { it.text } }
 
-    /**
-     * Every enabled field has a fixed width (monospace font), so the text never shifts or changes
-     * length from one second to the next, with or without GPS or a METAR.
-     */
-    /** The stamp as groups of fixed-width fields; [wrap] turns them into lines. */
-    private fun format(o: OverlayOptions, portrait: Boolean, v: Sample, wallMs: Long): List<List<String>> {
-        val pattern = if (o.clock12h) "yyyy-MM-dd  hh:mm:ss a z" else "yyyy-MM-dd  HH:mm:ss z"
-        val fmt = SimpleDateFormat(pattern, Locale.US).apply {
-            timeZone = if (o.utc) TimeZone.getTimeZone("UTC") else TimeZone.getDefault()
+    private fun shorten(s: String, max: Int) = if (s.length > max) s.take(max - 1).trimEnd() + "…" else s
+
+    /** Zone abbreviation (CET, EST, PDT…), using common English names rather than "GMT+01:00". */
+    private fun abbr(tz: TimeZone, daylight: Boolean): String {
+        // British English knows European names (CET), US English the American ones (EST, PDT).
+        val names = listOf(Locale.UK, Locale.US, Locale.getDefault()).map { tz.getDisplayName(daylight, TimeZone.SHORT, it) }
+        return names.firstOrNull { !it.startsWith("GMT") } ?: names.first()
+    }
+
+    /** Offset from UTC, e.g. "UTC+1", "UTC-5", "UTC+5:30", "UTC". */
+    private fun offset(tz: TimeZone, wallMs: Long): String {
+        val mins = tz.getOffset(wallMs) / 60_000
+        if (mins == 0) return "UTC"
+        val sign = if (mins > 0) "+" else "-"
+        val h = kotlin.math.abs(mins) / 60; val m = kotlin.math.abs(mins) % 60
+        return "UTC$sign$h" + if (m != 0) String.format(Locale.US, ":%02d", m) else ""
+    }
+
+    /** The time-zone text after the clock, per the user's choice. */
+    private fun zoneText(o: OverlayOptions, tz: TimeZone, wallMs: Long, widest: Boolean): String {
+        if (o.utc) return "UTC"
+        val a = if (widest) maxOf(abbr(tz, false), abbr(tz, true), compareBy { it.length })
+                else abbr(tz, tz.inDaylightTime(Date(wallMs)))
+        val off = if (widest) {
+            // Widest of the standard and summer offsets.
+            val y = java.util.Calendar.getInstance(tz).get(java.util.Calendar.YEAR)
+            listOf(java.util.GregorianCalendar(y, 0, 15), java.util.GregorianCalendar(y, 6, 15))
+                .map { it.timeZone = tz; offset(tz, it.timeInMillis) }.maxBy { it.length }
+        } else offset(tz, wallMs)
+        return when (o.zoneStyle) {
+            "none" -> ""
+            "offset" -> off
+            "both" -> if (a == off || a.startsWith("GMT")) off else "$a ($off)"
+            else -> if (a.startsWith("GMT")) off else a   // no common abbreviation: show the offset
         }
-        val time = buildString {
-            append(fmt.format(Date(wallMs)))
-            append("   ").append(o.camLabel)
-            if (o.userText.isNotEmpty()) append("   ").append(o.userText)
-        }
-        val place: String? = if (o.showPlace) fit(v.place ?: "", PLACE_W) else null
+    }
 
-        var position = ""
-        if (o.showCoords) {
-            val lat = v.lat?.let { String.format(Locale.US, "%9.6f°%s", abs(it), if (it >= 0) "N" else "S") } ?: "--.------° "
-            val lon = v.lon?.let { String.format(Locale.US, "%10.6f°%s", abs(it), if (it >= 0) "E" else "W") } ?: "---.------° "
-            val acc = if (!o.showAccuracy) "" else " " + (v.accM?.let { "±${it.coerceAtMost(999)}m" } ?: "±---m").padEnd(6)
-            val full = "$lat $lon$acc"
-            // Same width as a real position, so the stamp keeps its shape when the fix drops.
-            position = if (v.lat == null) fit("no GPS fix (${v.satsUsed}/${v.satsVisible} sats)", full.length) else full
-        }
+    private fun build(o: OverlayOptions, portrait: Boolean, v: Sample, wallMs: Long, widest: Boolean = false): List<List<Field>> {
+        val tz = if (o.utc) TimeZone.getTimeZone("UTC") else TimeZone.getDefault()
+        val fmt = SimpleDateFormat(if (o.clock12h) "yyyy-MM-dd h:mm:ss a" else "yyyy-MM-dd HH:mm:ss", Locale.US)
+            .apply { timeZone = tz }
+        val clock = if (widest) "2088-12-28 " + (if (o.clock12h) "12:58:58 PM" else "23:58:58")
+                    else fmt.format(Date(wallMs))
+        val dateTime = Field(listOf(clock, zoneText(o, tz, wallMs, widest = widest)).filter { it.isNotEmpty() }.joinToString(" "))
+        val label = Field(listOf(o.camLabel, o.userText).filter { it.isNotEmpty() }.joinToString("  "), right = true)
+        val place = if (o.showPlace) Field(shorten(v.place ?: "", PLACE_MAX)) else null
 
-        val motion = ArrayList<String>()
-        val mph: Int? = v.mps?.let { mph(it).roundToInt().coerceAtMost(999) }
-        val kph: Int? = v.mps?.let { kph(it).roundToInt().coerceAtMost(999) }
+        val position = if (!o.showCoords) null else Field(
+            if (v.lat == null || v.lon == null) "No GPS fix (${v.satsUsed}/${v.satsVisible} sats)"
+            else buildString {
+                append(String.format(Locale.US, "%.5f°%s %.5f°%s",
+                    abs(v.lat), if (v.lat >= 0) "N" else "S", abs(v.lon), if (v.lon >= 0) "E" else "W"))
+                if (o.showAccuracy && v.accM != null) append("  ±").append(v.accM.coerceAtMost(999)).append(" m")
+            })
+
+        val motion = ArrayList<Field>()
+        val mph = v.mps?.let { mph(it).roundToInt().coerceAtMost(999).toString() } ?: "–"
+        val kph = v.mps?.let { kph(it).roundToInt().coerceAtMost(999).toString() } ?: "–"
         when (o.speedUnit) {
-            "mph" -> motion.add("${n3(mph)} mph")
-            "kmh" -> motion.add("${n3(kph)} km/h")
+            "mph" -> motion.add(Field("$mph mph"))
+            "kmh" -> motion.add(Field("$kph km/h"))
             "off" -> {}
-            else -> motion.add("${n3(mph)} mph ${n3(kph)} km/h")
+            else -> motion.add(Field("$mph mph · $kph km/h"))
         }
         if (o.showHeading) {
-            val b = v.bearing
-            motion.add(if (b != null) String.format(Locale.US, "%-3s %3d°", cardinal(b), b.roundToInt() % 360) else "        ")
+            motion.add(Field(v.bearing?.let { "${cardinal(it)} ${String.format(Locale.US, "%03d", it.roundToInt() % 360)}°" } ?: ""))
         }
         if (o.showAltitude) {
-            val ft = v.altFt
-            motion.add(when {
-                o.altUnit == "m" && ft != null -> String.format(Locale.US, "alt %5dm", (ft * 0.3048).roundToInt().coerceIn(-9999, 99999))
-                o.altUnit == "m" -> "alt -----m"
-                ft != null -> String.format(Locale.US, "alt %5dft", ft.coerceIn(-9999, 99999))
-                else -> "alt -----ft"
-            })
+            motion.add(Field(when {
+                v.altFt == null -> "Alt –"
+                o.altUnit == "m" -> "Alt ${(v.altFt * 0.3048).roundToInt()} m"
+                else -> "Alt ${v.altFt} ft"
+            }))
         }
-        if (o.showSats) motion.add(String.format(Locale.US, "%2d sats", v.satsUsed.coerceAtMost(99)))
+        if (o.showSats) motion.add(Field("${v.satsUsed.coerceAtMost(99)} sats"))
 
         val weather = weatherFields(o, v)
 
-        // Groups always start on a new line; within a group, fields wrap as space allows.
-        val groups = ArrayList<List<String>>()
-        groups.add(listOfNotNull(time, place))
+        val groups = ArrayList<List<Field>>()
         if (portrait) {
-            if (position.isNotEmpty()) groups.add(listOf(position))
-            if (motion.isNotEmpty()) groups.add(motion)
+            groups.add(listOf(dateTime, label))
+            if (place != null) groups.add(listOf(place))
         } else {
-            val parts = ArrayList<String>()
-            if (position.isNotEmpty()) parts.add(position)
-            parts.addAll(motion)
-            if (parts.isNotEmpty()) groups.add(parts)
+            groups.add(listOfNotNull(dateTime, place, label))
         }
+        // Position and motion share a group so they can sit on one line when there's room.
+        val pm = ArrayList<Field>()
+        position?.let { pm.add(it) }
+        pm.addAll(motion)
+        if (pm.isNotEmpty()) groups.add(pm)
         if (weather.isNotEmpty()) groups.add(weather)
         return groups
     }
 
     private fun temp(o: OverlayOptions, c: Float?): String {
-        val cs = if (c != null) String.format(Locale.US, "%3d°C", c.roundToInt()) else " --°C"
-        val fs = if (c != null) String.format(Locale.US, "%3d°F", (c * 9 / 5 + 32).roundToInt()) else " --°F"
-        return when (o.tempUnit) { "C" -> cs; "F" -> fs; else -> "$cs $fs" }
+        if (c == null) return when (o.tempUnit) { "C" -> "–°C"; "F" -> "–°F"; else -> "–°C / –°F" }
+        val cs = "${c.roundToInt()}°C"
+        val fs = "${(c * 9 / 5 + 32).roundToInt()}°F"
+        return when (o.tempUnit) { "C" -> cs; "F" -> fs; else -> "$cs / $fs" }
     }
 
     private fun wind(w: Altimeter.Weather): String {
-        val kt = w.windKt ?: return "wind --"
-        if (kt == 0) return "wind calm"
+        val kt = w.windKt ?: return "Wind –"
+        if (kt == 0) return "Wind calm"
         val dir = w.windDir
         val d = if (dir == null || dir < 0) "VRB" else String.format(Locale.US, "%03d°", dir)
         val g = w.gustKt?.let { " G${it.coerceAtMost(99)}" } ?: ""
-        // The whole field is padded to a fixed width by fit(), so no padding inside it.
-        return "wind $d/${kt.coerceAtMost(99)}kt$g"
+        return "Wind $d ${kt.coerceAtMost(99)}$g kt"
     }
 
     private fun vis(o: OverlayOptions, w: Altimeter.Weather): String {
-        val mi = w.visMi ?: return "vis --"
+        val mi = w.visMi ?: return "Vis –"
         val plus = if (w.visPlus) "+" else ""
         return if (o.altUnit == "m" || o.speedUnit == "kmh") {
             val km = mi * 1.609f
-            "vis " + (if (km >= 10) String.format(Locale.US, "%.0f", km) else String.format(Locale.US, "%.1f", km)) + plus + "km"
+            "Vis " + (if (km >= 10) String.format(Locale.US, "%.0f", km) else String.format(Locale.US, "%.1f", km)) + plus + " km"
         } else {
-            "vis " + (if (mi >= 3) String.format(Locale.US, "%.0f", mi) else String.format(Locale.US, "%.1f", mi)) + plus + "mi"
+            "Vis " + (if (mi >= 3) String.format(Locale.US, "%.0f", mi) else String.format(Locale.US, "%.1f", mi)) + plus + " mi"
         }
     }
 
     private fun clouds(o: OverlayOptions, w: Altimeter.Weather): String {
-        val c = w.cloudCover ?: return "sky --"
-        if (c in setOf("CLR", "SKC", "NSC", "NCD", "CAVOK")) return "clear sky"
+        val c = w.cloudCover ?: return "Sky –"
+        if (c in setOf("CLR", "SKC", "NSC", "NCD", "CAVOK")) return "Clear sky"
         val base = w.cloudBaseFt ?: return c
-        return if (o.altUnit == "m") "$c ${(base * 0.3048).roundToInt()}m" else "$c ${base}ft"
+        return if (o.altUnit == "m") "$c ${(base * 0.3048).roundToInt()} m" else "$c $base ft"
     }
 
     private fun qnh(o: OverlayOptions, hpa: Float?): String = when {
-        o.altUnit == "m" && hpa != null -> String.format(Locale.US, "Q%4d", hpa.roundToInt())
-        o.altUnit == "m" -> "Q----"
-        hpa != null -> String.format(Locale.US, "A%5.2f", hpa / 33.8639f)
-        else -> "A--.--"
+        hpa == null -> "QNH –"
+        o.altUnit == "m" -> "QNH ${hpa.roundToInt()}"
+        else -> String.format(Locale.US, "QNH %.2f", hpa / 33.8639f)
     }
 
-    /** Selected METAR details, each at a fixed width; dashes until a report arrives. */
-    private fun weatherFields(o: OverlayOptions, v: Sample): List<String> {
+    /** Selected METAR details; a dash until a report arrives. */
+    private fun weatherFields(o: OverlayOptions, v: Sample): List<Field> {
         if (o.weather.isEmpty()) return emptyList()
         val w = v.wx
-        val parts = ArrayList<String>()
+        val out = ArrayList<Field>()
         for (f in WEATHER_ORDER) {
             if (f !in o.weather) continue
-            parts.add(when (f) {
-                "station" -> fit(v.station ?: "----", 4)
+            out.add(Field(when (f) {
+                "station" -> v.station ?: "––––"
                 "temp" -> temp(o, w.tempC)
-                "dew" -> "dew " + temp(o, w.dewC)
-                "rh" -> w.rhPercent?.let { String.format(Locale.US, "RH %3d%%", it) } ?: "RH  --%"
-                "wind" -> fit(wind(w), 18)
-                "vis" -> fit(vis(o, w), 10)
-                "clouds" -> fit(clouds(o, w), 12)
-                "wx" -> fit(w.wx ?: "", WX_W)
+                "dew" -> "Dew " + temp(o, w.dewC)
+                "rh" -> "RH " + (w.rhPercent?.let { "$it%" } ?: "–")
+                "wind" -> wind(w)
+                "vis" -> vis(o, w)
+                "clouds" -> clouds(o, w)
+                "wx" -> w.wx ?: ""
                 "qnh" -> qnh(o, v.qnhHpa)
                 else -> ""
-            })
+            }))
         }
-        return parts
+        return out
     }
 }

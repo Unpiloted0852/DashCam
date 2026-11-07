@@ -1,42 +1,46 @@
 package com.example.dashcam
 
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 
-/** The stamp wraps between whole fields instead of squeezing every line to fit the longest one. */
+/**
+ * The stamp is a fixed set of fields per option set; live values fill the spots reserved by the
+ * widest-case template, so nothing moves from second to second.
+ */
 class StampLayoutTest {
     private val everything = OverlayOptions(
         camLabel = "FRONT", userText = "AB-123", clock12h = true, showPlace = true,
         weather = setOf("station", "temp", "dew", "rh", "wind", "vis", "clouds", "wx", "qnh"),
     )
+    private val mine = OverlayOptions(   // the user's own setup: km/h, no sats, temp/RH/wind/clouds in °C
+        camLabel = "FRONT", speedUnit = "kmh", showSats = false, showPlace = true,
+        weather = setOf("temp", "rh", "wind", "clouds"), tempUnit = "C",
+    )
 
-    private fun show(name: String, lines: List<String>, maxChars: Int) {
-        println("--- $name (max $maxChars chars) ---")
-        lines.forEach { println("|$it|") }
+    private fun shape(g: List<List<Telemetry.Field>>) = g.map { it.size }
+
+    @Test fun liveStampHasTheTemplateShape() {
+        for (o in listOf(everything, mine, OverlayOptions("REAR"))) for (portrait in listOf(true, false)) {
+            val t = Telemetry.stampTemplate(o, portrait)
+            val live = Telemetry.stampFields(o, portrait, wallMs = 0)   // no GPS / METAR data in tests
+            assertEquals("shape for $o portrait=$portrait", shape(t), shape(live))
+        }
     }
 
-    @Test fun portraitLinesFitWithoutSqueezing() {
-        val max = 52   // about what a 720x1280 portrait frame fits at normal text size
-        val lines = Telemetry.overlayTemplate(everything, portrait = true, maxChars = max)
-        show("portrait", lines, max)
-        assertTrue(lines.all { it.length <= max })
-        assertTrue(lines.size <= OverlayTexture.MAX_LINES)
+    @Test fun noStraySpacesInFields() {
+        for (o in listOf(everything, mine)) for (portrait in listOf(true, false)) {
+            val fields = Telemetry.stampFields(o, portrait, 0).flatten() + Telemetry.stampTemplate(o, portrait).flatten()
+            fields.forEach { assertTrue("'${it.text}'", it.text == it.text.trim()) }
+        }
     }
 
-    @Test fun landscapeLinesFit() {
-        val max = 92
-        val lines = Telemetry.overlayTemplate(everything, portrait = false, maxChars = max)
-        show("landscape", lines, max)
-        assertTrue(lines.all { it.length <= max })
-    }
-
-    @Test fun layoutIsStableWithoutData() {
-        // No GPS / METAR: same line breaks and lengths as the widest-case template.
-        val max = 52
-        val template = Telemetry.overlayTemplate(everything, portrait = true, maxChars = max)
-        val live = Telemetry.overlayLines(everything, portrait = true, wallMs = 0, maxChars = max)
-        show("portrait, no data", live, max)
-        assertTrue(template.size == live.size)
-        assertTrue(template.zip(live).all { (a, b) -> a.length == b.length })
+    @Test fun printForReview() {
+        for ((name, o) in listOf("everything" to everything, "mine" to mine)) {
+            println("--- $name, template ---")
+            Telemetry.stampTemplate(o, true).forEach { g -> println(g.joinToString("  |  ") { it.text }) }
+            println("--- $name, no data ---")
+            Telemetry.stampFields(o, true, 0).forEach { g -> println(g.joinToString("  |  ") { it.text }) }
+        }
     }
 }

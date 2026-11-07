@@ -50,6 +50,7 @@ class DashSettings(ctx: Context) {
         showCoords = showCoords,
         utc = useUtc,
         clock12h = str("stamp_clock", "24") == "12",
+        zoneStyle = str("stamp_zone", "abbr"),
         showAccuracy = bool("stamp_accuracy", true),
         speedUnit = str("stamp_speed", "both"),
         showHeading = bool("stamp_heading", true),
@@ -59,8 +60,16 @@ class DashSettings(ctx: Context) {
         showPlace = bool("stamp_place", false),
         weather = if (bool("stamp_weather", false)) set("stamp_weather_fields", DEFAULT_WEATHER) else emptySet(),
         tempUnit = str("stamp_temp_unit", "both"),
-        textSize = str("stamp_size", "0.055").toFloatOrNull() ?: 0.055f,
+        textSize = stampTextSize(str("stamp_size", "normal")),
     )
+
+    /** Text height as a fraction of the frame's short side; kept small so the video stays clear. */
+    private fun stampTextSize(v: String): Float = when (v) {
+        "small" -> 0.036f
+        "large" -> 0.054f
+        "normal" -> 0.044f
+        else -> v.toFloatOrNull()?.let { if (it < 0.05f) 0.036f else if (it > 0.06f) 0.054f else 0.044f } ?: 0.044f
+    }
 
     val showPlace: Boolean get() = bool("stamp_place", false)
     val speedUnit: String get() = str("stamp_speed", "both")
@@ -105,6 +114,8 @@ data class OverlayOptions(
     val showCoords: Boolean = true,
     val utc: Boolean = false,
     val clock12h: Boolean = false,
+    /** Time zone after the time: "abbr" (CET), "offset" (UTC+1), "both" (CET (UTC+1)) or "none". */
+    val zoneStyle: String = "abbr",
     val showAccuracy: Boolean = true,
     /** "both", "mph", "kmh" or "off". */
     val speedUnit: String = "both",
@@ -119,5 +130,5 @@ data class OverlayOptions(
     /** "F", "C" or "both". */
     val tempUnit: String = "both",
     /** Text height as a fraction of the frame's short side. */
-    val textSize: Float = 0.055f,
+    val textSize: Float = 0.044f,
 )

@@ -76,10 +76,13 @@
     <PreferenceCategory app:title="Video stamp">
         <ListPreference app:key="stamp_size" app:title="Text size"
             app:entries="@array/stamp_size_labels" app:entryValues="@array/stamp_size_values"
-            app:defaultValue="0.055" app:useSimpleSummaryProvider="true" />
+            app:defaultValue="normal" app:useSimpleSummaryProvider="true" />
         <ListPreference app:key="stamp_clock" app:title="Time format"
             app:entries="@array/clock_labels" app:entryValues="@array/clock_values"
             app:defaultValue="24" app:useSimpleSummaryProvider="true" />
+        <ListPreference app:key="stamp_zone" app:title="Time zone shown"
+            app:entries="@array/zone_labels" app:entryValues="@array/zone_values"
+            app:defaultValue="abbr" app:useSimpleSummaryProvider="true" />
         <SwitchPreferenceCompat app:key="use_utc" app:title="Use UTC time"
             app:summary="Off = local time zone" app:defaultValue="false" />
         <EditTextPreference app:key="overlay_label" app:title="Extra text"
