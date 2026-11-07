@@ -16,10 +16,11 @@ import kotlin.math.roundToInt
  * Text stamp (time/date/GPS/speed) drawn with Canvas into a bitmap, uploaded as a GL texture and
  * composited onto the bottom of every frame. Must be used on the GL thread.
  */
-class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: FrameDrawer) {
+class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: FrameDrawer, val textSize: Float = 0.055f) {
     private val portrait = frameH > frameW
-    private val lineCount = if (portrait) 3 else 2
-    private val lineH = max(16, (minOf(frameW, frameH) * 0.055f).roundToInt()).toFloat()
+    /** Room for the most lines any combination of stamp options can produce; unused rows stay clear. */
+    private val lineCount = 5
+    private val lineH = max(16, (minOf(frameW, frameH) * textSize).roundToInt()).toFloat()
     private val bmpH = (lineH * lineCount).roundToInt()
     private val bmp = Bitmap.createBitmap(frameW, bmpH, Bitmap.Config.ARGB_8888)
     private val canvas = Canvas(bmp)
@@ -32,7 +33,8 @@ class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: Frame
         FrameDrawer.floats(-1f, -1f, 1f, -1f, -1f, top, 1f, top)
     }
 
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+    // Sub-pixel positioning keeps squeezed text from drifting wider than measured.
+    private val fill = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG or Paint.LINEAR_TEXT_FLAG).apply {
         color = Color.WHITE
         typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
         textSize = lineH * 0.70f
@@ -57,12 +59,14 @@ class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: Frame
     private fun layoutFor(o: OverlayOptions) {
         if (layoutKey == o) return
         layoutKey = o
-        fill.textScaleX = 1f
         val template = Telemetry.overlayTemplate(o, portrait).take(lineCount)
-        val widest = template.maxOf { fill.measureText(it) }
         val avail = bmp.width - 2 * pad
-        scaleX = if (widest > avail) avail / widest else 1f
-        barW = widest * scaleX + 2 * pad
+        fun widestAt(sx: Float): Float { fill.textScaleX = sx; return template.maxOf { fill.measureText(it) } }
+        // Glyph widths don't scale exactly linearly, so measure with the squeeze applied and refine.
+        var sx = 1f
+        repeat(3) { val w = widestAt(sx); if (w > avail) sx *= avail / w * 0.995f }
+        scaleX = sx
+        barW = widestAt(sx) + 2 * pad
     }
 
     /** [frameWallMs]: accurate wall time at which the frame was captured. */

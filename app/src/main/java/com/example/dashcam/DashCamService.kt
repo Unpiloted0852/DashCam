@@ -112,6 +112,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         Telemetry.start(this)
         Altimeter.start(this)
         TrueTime.start()
+        PlaceName.start(this) { settings.showPlace }
         getSystemService(CameraManager::class.java).registerAvailabilityCallback(availability, ui)
         startCameras()
     }
@@ -142,6 +143,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         Telemetry.stop()
         Altimeter.stop()
         TrueTime.stop()
+        PlaceName.stop()
         releaseWakeLock()
         worker.shutdown()
         super.onDestroy()
@@ -218,7 +220,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         p.mirror = !main && settings.cabinMirror
         p.rotate180 = if (main) settings.mainRotate180 else settings.cabinRotate180
         p.displayRotation = displayRotationDeg
-        p.overlayOptions = OverlayOptions(p.role.label, settings.overlayLabel, settings.showCoords, settings.useUtc)
+        p.overlayOptions = settings.overlayOptions(p.role.label)
     }
 
     override fun onCameraStarted(p: CameraPipeline) {

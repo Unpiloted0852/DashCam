@@ -74,12 +74,46 @@
     </PreferenceCategory>
 
     <PreferenceCategory app:title="Video stamp">
-        <SwitchPreferenceCompat app:key="show_coords" app:title="Show GPS coordinates"
-            app:defaultValue="true" />
+        <ListPreference app:key="stamp_size" app:title="Text size"
+            app:entries="@array/stamp_size_labels" app:entryValues="@array/stamp_size_values"
+            app:defaultValue="0.055" app:useSimpleSummaryProvider="true" />
+        <ListPreference app:key="stamp_clock" app:title="Time format"
+            app:entries="@array/clock_labels" app:entryValues="@array/clock_values"
+            app:defaultValue="24" app:useSimpleSummaryProvider="true" />
         <SwitchPreferenceCompat app:key="use_utc" app:title="Use UTC time"
             app:summary="Off = local time zone" app:defaultValue="false" />
         <EditTextPreference app:key="overlay_label" app:title="Extra text"
             app:summary="e.g. your plate number or name" app:defaultValue="" />
+        <SwitchPreferenceCompat app:key="show_coords" app:title="GPS coordinates"
+            app:defaultValue="true" />
+        <SwitchPreferenceCompat app:key="stamp_accuracy" app:title="GPS accuracy (±m)"
+            app:dependency="show_coords" app:defaultValue="true" />
+        <SwitchPreferenceCompat app:key="stamp_place" app:title="Place name (road and town)"
+            app:summary="Looked up with Android's geocoder, which sends your position to Google"
+            app:defaultValue="false" />
+        <ListPreference app:key="stamp_speed" app:title="Speed"
+            app:entries="@array/speed_labels" app:entryValues="@array/speed_values"
+            app:defaultValue="both" app:useSimpleSummaryProvider="true" />
+        <SwitchPreferenceCompat app:key="stamp_heading" app:title="Heading (compass direction)"
+            app:defaultValue="true" />
+        <SwitchPreferenceCompat app:key="stamp_altitude" app:title="Altitude"
+            app:defaultValue="true" />
+        <ListPreference app:key="stamp_alt_unit" app:title="Altitude and cloud units"
+            app:entries="@array/alt_unit_labels" app:entryValues="@array/alt_unit_values"
+            app:defaultValue="ft" app:useSimpleSummaryProvider="true" />
+        <SwitchPreferenceCompat app:key="stamp_sats" app:title="Satellite count"
+            app:defaultValue="true" />
+        <SwitchPreferenceCompat app:key="stamp_weather" app:title="Weather line"
+            app:summary="From the nearest airport's METAR (the same report used for altitude)"
+            app:defaultValue="false" />
+        <MultiSelectListPreference app:key="stamp_weather_fields" app:title="Weather details"
+            app:dependency="stamp_weather"
+            app:entries="@array/weather_labels" app:entryValues="@array/weather_values"
+            app:defaultValue="@array/weather_defaults" />
+        <ListPreference app:key="stamp_temp_unit" app:title="Temperature units"
+            app:dependency="stamp_weather"
+            app:entries="@array/temp_unit_labels" app:entryValues="@array/temp_unit_values"
+            app:defaultValue="both" app:useSimpleSummaryProvider="true" />
     </PreferenceCategory>
 
     <PreferenceCategory app:title="Background recording">

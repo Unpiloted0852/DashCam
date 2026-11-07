@@ -13,4 +13,17 @@
     <string-array name="focus_values"><item>inf</item><item>hyper</item><item>20</item><item>10</item><item>5</item></string-array>
     <string-array name="autostop_labels"><item>Off</item><item>After 2 min</item><item>After 5 min</item><item>After 10 min</item><item>After 15 min</item><item>After 30 min</item></string-array>
     <string-array name="autostop_values"><item>0</item><item>2</item><item>5</item><item>10</item><item>15</item><item>30</item></string-array>
+    <string-array name="stamp_size_labels"><item>Small</item><item>Normal</item><item>Large</item></string-array>
+    <string-array name="stamp_size_values"><item>0.042</item><item>0.055</item><item>0.07</item></string-array>
+    <string-array name="clock_labels"><item>24-hour (14:05:09)</item><item>12-hour (02:05:09 PM)</item></string-array>
+    <string-array name="clock_values"><item>24</item><item>12</item></string-array>
+    <string-array name="speed_labels"><item>mph and km/h</item><item>mph</item><item>km/h</item><item>Don\'t show</item></string-array>
+    <string-array name="speed_values"><item>both</item><item>mph</item><item>kmh</item><item>off</item></string-array>
+    <string-array name="alt_unit_labels"><item>Feet</item><item>Metres</item></string-array>
+    <string-array name="alt_unit_values"><item>ft</item><item>m</item></string-array>
+    <string-array name="temp_unit_labels"><item>°F and °C</item><item>°F</item><item>°C</item></string-array>
+    <string-array name="temp_unit_values"><item>both</item><item>F</item><item>C</item></string-array>
+    <string-array name="weather_labels"><item>Airport code</item><item>Temperature</item><item>Dew point</item><item>Relative humidity</item><item>Wind and gusts</item><item>Visibility</item><item>Cloud base and cover</item><item>Rain, snow, fog…</item><item>Altimeter setting</item></string-array>
+    <string-array name="weather_values"><item>station</item><item>temp</item><item>dew</item><item>rh</item><item>wind</item><item>vis</item><item>clouds</item><item>wx</item><item>qnh</item></string-array>
+    <string-array name="weather_defaults"><item>station</item><item>temp</item><item>rh</item><item>wind</item><item>clouds</item></string-array>
 </resources>

@@ -137,7 +137,7 @@ class CameraPipeline(
         set(v) { field = v; cam.post { applyRequest() } }   // AF region depends on orientation
     @Volatile var mirror = false
     @Volatile var rotate180 = false
-    @Volatile var overlayOptions = OverlayOptions(role.label, "", true, false)
+    @Volatile var overlayOptions = OverlayOptions(role.label)
 
     // --- status for UI ---
     @Volatile var cameraOpen = false; private set
@@ -239,9 +239,10 @@ class CameraPipeline(
     }
 
     private fun overlayFor(cur: OverlayTexture?, frame: Size): OverlayTexture {
-        if (cur != null && cur.frameW == frame.width && cur.frameH == frame.height) return cur
+        val size = overlayOptions.textSize
+        if (cur != null && cur.frameW == frame.width && cur.frameH == frame.height && cur.textSize == size) return cur
         cur?.release()
-        return OverlayTexture(frame.width, frame.height, drawer!!)
+        return OverlayTexture(frame.width, frame.height, drawer!!, size)
     }
 
     private fun currentAngle() = (displayRotation + if (rotate180) 180 else 0) % 360

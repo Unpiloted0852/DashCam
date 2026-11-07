@@ -42,6 +42,29 @@ class DashSettings(ctx: Context) {
     val autoRecord: Boolean get() = bool("auto_record", false)
     val keepScreenOn: Boolean get() = bool("keep_screen_on", true)
 
+    private fun set(key: String, def: Set<String>): Set<String> = p.getStringSet(key, def) ?: def
+
+    fun overlayOptions(camLabel: String) = OverlayOptions(
+        camLabel = camLabel,
+        userText = overlayLabel,
+        showCoords = showCoords,
+        utc = useUtc,
+        clock12h = str("stamp_clock", "24") == "12",
+        showAccuracy = bool("stamp_accuracy", true),
+        speedUnit = str("stamp_speed", "both"),
+        showHeading = bool("stamp_heading", true),
+        showAltitude = bool("stamp_altitude", true),
+        altUnit = str("stamp_alt_unit", "ft"),
+        showSats = bool("stamp_sats", true),
+        showPlace = bool("stamp_place", false),
+        weather = if (bool("stamp_weather", false)) set("stamp_weather_fields", DEFAULT_WEATHER) else emptySet(),
+        tempUnit = str("stamp_temp_unit", "both"),
+        textSize = str("stamp_size", "0.055").toFloatOrNull() ?: 0.055f,
+    )
+
+    val showPlace: Boolean get() = bool("stamp_place", false)
+    val speedUnit: String get() = str("stamp_speed", "both")
+
     fun setMainFarFocus(on: Boolean) = p.edit().putBoolean("main_far_focus", on).apply()
 
     fun bitrateFor(size: Size): Int =
@@ -57,6 +80,7 @@ class DashSettings(ctx: Context) {
     companion object {
         /** Changing these needs the cameras to be reopened. */
         const val STOP_SPEED_MPS = 1.0f  // ~2 mph: GPS jitter while parked stays below this
+        val DEFAULT_WEATHER = setOf("station", "temp", "rh", "wind", "clouds")
         val RESTART_KEYS = setOf("main_lens", "main_resolution", "cabin_resolution", "cabin_enabled")
     }
 }
@@ -74,9 +98,26 @@ data class FocusConfig(val far: Boolean, val target: String) {
     }
 }
 
+/** What the burned-in stamp shows. Equal options -> identical layout. */
 data class OverlayOptions(
     val camLabel: String,
-    val userText: String,
-    val showCoords: Boolean,
-    val utc: Boolean,
+    val userText: String = "",
+    val showCoords: Boolean = true,
+    val utc: Boolean = false,
+    val clock12h: Boolean = false,
+    val showAccuracy: Boolean = true,
+    /** "both", "mph", "kmh" or "off". */
+    val speedUnit: String = "both",
+    val showHeading: Boolean = true,
+    val showAltitude: Boolean = true,
+    /** "ft" or "m" (also used for cloud bases). */
+    val altUnit: String = "ft",
+    val showSats: Boolean = true,
+    val showPlace: Boolean = false,
+    /** Weather fields from the nearest METAR; empty = no weather line. */
+    val weather: Set<String> = emptySet(),
+    /** "F", "C" or "both". */
+    val tempUnit: String = "both",
+    /** Text height as a fraction of the frame's short side. */
+    val textSize: Float = 0.055f,
 )

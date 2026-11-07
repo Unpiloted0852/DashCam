@@ -31,7 +31,55 @@ object Altimeter : SensorEventListener {
     private const val MOVE_REFETCH_M = 25_000f       // nearest station may have changed
 
     data class Metar(val station: String, val altimHpa: Float, val lat: Double, val lon: Double,
-                     val obsEpochSec: Long, val fetchedElapsed: Long, val fetchedAt: Location)
+                     val obsEpochSec: Long, val fetchedElapsed: Long, val fetchedAt: Location,
+                     val weather: Weather = Weather())
+
+    /** Weather from the report, for the optional stamp line. Null = not reported. */
+    data class Weather(
+        val tempC: Float? = null, val dewC: Float? = null,
+        /** Wind direction in degrees; -1 = variable. */
+        val windDir: Int? = null, val windKt: Int? = null, val gustKt: Int? = null,
+        /** Visibility in statute miles, and whether it was reported as "or more" (10+). */
+        val visMi: Float? = null, val visPlus: Boolean = false,
+        /** Lowest ceiling (BKN/OVC/VV) or else lowest layer, e.g. "OVC" at 900 ft; "CLR" for clear. */
+        val cloudCover: String? = null, val cloudBaseFt: Int? = null,
+        /** Present weather, e.g. "-RA BR". */
+        val wx: String? = null,
+    ) {
+        /** Relative humidity from temperature and dew point (Magnus formula). */
+        val rhPercent: Int? get() {
+            val t = tempC ?: return null; val d = dewC ?: return null
+            fun es(x: Float) = kotlin.math.exp(17.625 * x / (243.04 + x))
+            return (100 * es(d) / es(t)).toInt().coerceIn(0, 100)
+        }
+    }
+
+    private fun parseWeather(o: org.json.JSONObject): Weather {
+        fun optF(k: String) = if (o.has(k) && !o.isNull(k)) o.optDouble(k).takeIf { !it.isNaN() }?.toFloat() else null
+        fun optI(k: String) = optF(k)?.toInt()
+        val wdirRaw = o.opt("wdir")
+        val wdir = when {
+            wdirRaw is Number -> wdirRaw.toInt()
+            wdirRaw is String && wdirRaw.equals("VRB", true) -> -1
+            else -> wdirRaw?.toString()?.toIntOrNull()
+        }
+        val visRaw = o.opt("visib")?.toString()
+        val visPlus = visRaw?.endsWith("+") == true
+        val visMi = visRaw?.trimEnd('+')?.toFloatOrNull()
+        var cover: String? = null; var base: Int? = null
+        o.optJSONArray("clouds")?.let { arr ->
+            val layers = (0 until arr.length()).map { arr.getJSONObject(it) }
+            val ceiling = layers.firstOrNull { it.optString("cover") in setOf("BKN", "OVC", "VV", "OVX") }
+            val pick = ceiling ?: layers.firstOrNull()
+            if (pick != null) {
+                cover = pick.optString("cover")
+                base = if (pick.has("base") && !pick.isNull("base")) pick.optInt("base") else null
+            }
+        }
+        if (cover == null) o.optString("cover").takeIf { it.isNotEmpty() }?.let { cover = it }
+        return Weather(optF("temp"), optF("dewp"), wdir, optI("wspd"), optI("wgst"), visMi, visPlus,
+            cover, base, o.optString("wxString").takeIf { it.isNotBlank() && it != "null" })
+    }
 
     @Volatile var pressureHpa: Float? = null; private set
     @Volatile var metar: Metar? = null; private set
@@ -136,7 +184,7 @@ object Altimeter : SensorEventListener {
                 if (d[0] < bestDist) {
                     bestDist = d[0]
                     best = Metar(id, o.getDouble("altim").toFloat(), lat, lon, obs,
-                        SystemClock.elapsedRealtime(), Location(loc))
+                        SystemClock.elapsedRealtime(), Location(loc), parseWeather(o))
                 }
             }
             return best

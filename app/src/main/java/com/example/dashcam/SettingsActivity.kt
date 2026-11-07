@@ -100,6 +100,11 @@ class SettingsActivity : AppCompatActivity() {
                 true
             }
             setupBluetoothList()
+            findPreference<androidx.preference.MultiSelectListPreference>("stamp_weather_fields")?.summaryProvider =
+                Preference.SummaryProvider<androidx.preference.MultiSelectListPreference> { p ->
+                    val labels = p.entries.zip(p.entryValues).filter { it.second.toString() in p.values }.map { it.first }
+                    if (labels.isEmpty()) "Nothing selected" else labels.joinToString(", ")
+                }
             findPreference<Preference>("check_update")?.apply {
                 summary = "Installed: v${BuildConfig.VERSION_NAME} · github.com/${BuildConfig.UPDATE_REPO}"
                 setOnPreferenceClickListener { Updater.checkNow(requireActivity()); true }

@@ -118,11 +118,15 @@ object Telemetry {
         val lat: Double?, val lon: Double?, val accM: Int?,
         val mps: Float?, val bearing: Float?, val altFt: Int?,
         val satsUsed: Int, val satsVisible: Int,
+        val place: String? = null,
+        val station: String? = null, val qnhHpa: Float? = null,
+        val wx: Altimeter.Weather = Altimeter.Weather(),
     )
 
     private fun currentSample(): Sample {
         val fix = freshFix()
         val mps = speedMps()
+        val m = Altimeter.metar
         return Sample(
             lat = fix?.latitude, lon = fix?.longitude,
             accM = fix?.takeIf { it.hasAccuracy() }?.accuracy?.roundToInt(),
@@ -130,58 +134,161 @@ object Telemetry {
             bearing = fix?.takeIf { it.hasBearing() && (mps ?: 0f) > 1f }?.bearing,
             altFt = altitudeFeet()?.roundToInt(),
             satsUsed = satsUsed, satsVisible = satsVisible,
+            place = PlaceName.name,
+            station = m?.station, qnhHpa = m?.altimHpa, wx = m?.weather ?: Altimeter.Weather(),
         )
     }
 
-    /** Widest possible values, used once to size the stamp so it never changes shape. */
-    private val WIDEST = Sample(-89.999999, -179.999999, 999, 99f, 359f, -9999, 99, 99)
+    private const val PLACE_W = 32
+    private const val WX_W = 8
+    private val WEATHER_ORDER = listOf("station", "temp", "dew", "rh", "wind", "vis", "clouds", "wx", "qnh")
 
-    /** Lines burned into the video: 2 for landscape frames, 3 for narrow portrait frames. */
+    /** Widest possible values, used once to size the stamp so it never changes shape. */
+    private val WIDEST = Sample(-89.999999, -179.999999, 999, 99f, 359f, -9999, 99, 99,
+        place = "W".repeat(PLACE_W), station = "WWWW", qnhHpa = 1050f,
+        wx = Altimeter.Weather(-40f, -40f, 360, 99, 99, 10f, true, "OVC", 99999, "W".repeat(WX_W)))
+
+    /** Lines burned into the video (how many depends on the options and the frame's shape). */
     fun overlayLines(o: OverlayOptions, portrait: Boolean, wallMs: Long = TrueTime.nowMs()): List<String> =
         format(o, portrait, currentSample(), wallMs)
 
     /** Same layout filled with the widest possible values. */
     fun overlayTemplate(o: OverlayOptions, portrait: Boolean): List<String> = format(o, portrait, WIDEST, TrueTime.nowMs())
 
+    /** Fit [s] to exactly [w] characters so a field never changes width. */
+    private fun fit(s: String, w: Int): String = if (s.length > w) s.take(w - 1) + "…" else s.padEnd(w)
+
+    private fun n3(x: Int?): String = x?.let { String.format(Locale.US, "%3d", it) } ?: "---"
+
     /**
-     * Every field has a fixed width (monospace font), so the text never shifts or changes length
-     * from one second to the next, with or without a GPS fix.
+     * Every enabled field has a fixed width (monospace font), so the text never shifts or changes
+     * length from one second to the next, with or without GPS or a METAR.
      */
     private fun format(o: OverlayOptions, portrait: Boolean, v: Sample, wallMs: Long): List<String> {
-        val fmt = SimpleDateFormat("yyyy-MM-dd  HH:mm:ss z", Locale.US).apply {
+        val pattern = if (o.clock12h) "yyyy-MM-dd  hh:mm:ss a z" else "yyyy-MM-dd  HH:mm:ss z"
+        val fmt = SimpleDateFormat(pattern, Locale.US).apply {
             timeZone = if (o.utc) TimeZone.getTimeZone("UTC") else TimeZone.getDefault()
         }
-        val line1 = buildString {
+        val time = buildString {
             append(fmt.format(Date(wallMs)))
             append("   ").append(o.camLabel)
             if (o.userText.isNotEmpty()) append("   ").append(o.userText)
         }
-        val coords = if (!o.showCoords) "" else {
-            val lat = v.lat?.let { String.format(Locale.US, "%9.6f°%s", abs(it), if (it >= 0) "N" else "S") }
-                ?: "--.------° "
-            val lon = v.lon?.let { String.format(Locale.US, "%10.6f°%s", abs(it), if (it >= 0) "E" else "W") }
-                ?: "---.------° "
-            val acc = v.accM?.let { "±${it.coerceAtMost(999)}m".padEnd(6) } ?: "±---m "
-            val full = "$lat $lon $acc"
+        val place: String? = if (o.showPlace) fit(v.place ?: "", PLACE_W) else null
+
+        var position = ""
+        if (o.showCoords) {
+            val lat = v.lat?.let { String.format(Locale.US, "%9.6f°%s", abs(it), if (it >= 0) "N" else "S") } ?: "--.------° "
+            val lon = v.lon?.let { String.format(Locale.US, "%10.6f°%s", abs(it), if (it >= 0) "E" else "W") } ?: "---.------° "
+            val acc = if (!o.showAccuracy) "" else " " + (v.accM?.let { "±${it.coerceAtMost(999)}m" } ?: "±---m").padEnd(6)
+            val full = "$lat $lon$acc"
             // Same width as a real position, so the stamp keeps its shape when the fix drops.
-            if (v.lat == null) "no GPS fix (${v.satsUsed}/${v.satsVisible} sats)".padEnd(full.length).take(full.length) else full
+            position = if (v.lat == null) fit("no GPS fix (${v.satsUsed}/${v.satsVisible} sats)", full.length) else full
         }
-        val motion = buildString {
-            if (v.mps != null) {
-                append(String.format(Locale.US, "%3d mph %3d km/h",
-                    mph(v.mps).roundToInt().coerceAtMost(999), kph(v.mps).roundToInt().coerceAtMost(999)))
-            } else append("--- mph --- km/h")
-            append("  ")
-            append(v.bearing?.let { String.format(Locale.US, "%-3s %3d°", cardinal(it), it.roundToInt() % 360) } ?: "        ")
-            append("  ")
-            append(v.altFt?.let { String.format(Locale.US, "alt %5dft", it.coerceIn(-9999, 99999)) } ?: "alt -----ft")
-            append("  ")
-            append(String.format(Locale.US, "%2d sats", v.satsUsed.coerceAtMost(99)))
+
+        val motion = ArrayList<String>()
+        val mph: Int? = v.mps?.let { mph(it).roundToInt().coerceAtMost(999) }
+        val kph: Int? = v.mps?.let { kph(it).roundToInt().coerceAtMost(999) }
+        when (o.speedUnit) {
+            "mph" -> motion.add("${n3(mph)} mph")
+            "kmh" -> motion.add("${n3(kph)} km/h")
+            "off" -> {}
+            else -> motion.add("${n3(mph)} mph ${n3(kph)} km/h")
         }
-        return when {
-            coords.isEmpty() -> listOf(line1, motion)
-            portrait -> listOf(line1, coords, motion)
-            else -> listOf(line1, "$coords  $motion")
+        if (o.showHeading) {
+            val b = v.bearing
+            motion.add(if (b != null) String.format(Locale.US, "%-3s %3d°", cardinal(b), b.roundToInt() % 360) else "        ")
         }
+        if (o.showAltitude) {
+            val ft = v.altFt
+            motion.add(when {
+                o.altUnit == "m" && ft != null -> String.format(Locale.US, "alt %5dm", (ft * 0.3048).roundToInt().coerceIn(-9999, 99999))
+                o.altUnit == "m" -> "alt -----m"
+                ft != null -> String.format(Locale.US, "alt %5dft", ft.coerceIn(-9999, 99999))
+                else -> "alt -----ft"
+            })
+        }
+        if (o.showSats) motion.add(String.format(Locale.US, "%2d sats", v.satsUsed.coerceAtMost(99)))
+
+        val weather = weatherLine(o, v)
+
+        val lines = ArrayList<String>()
+        if (portrait) {
+            lines.add(time)
+            if (place != null) lines.add(place)
+            if (position.isNotEmpty()) lines.add(position)
+            if (motion.isNotEmpty()) lines.add(motion.joinToString("  "))
+        } else {
+            lines.add(if (place != null) "$time   $place" else time)
+            val parts = ArrayList<String>()
+            if (position.isNotEmpty()) parts.add(position)
+            parts.addAll(motion)
+            if (parts.isNotEmpty()) lines.add(parts.joinToString("  "))
+        }
+        if (weather.isNotEmpty()) lines.add(weather)
+        return lines
+    }
+
+    private fun temp(o: OverlayOptions, c: Float?): String {
+        val cs = if (c != null) String.format(Locale.US, "%3d°C", c.roundToInt()) else " --°C"
+        val fs = if (c != null) String.format(Locale.US, "%3d°F", (c * 9 / 5 + 32).roundToInt()) else " --°F"
+        return when (o.tempUnit) { "C" -> cs; "F" -> fs; else -> "$cs $fs" }
+    }
+
+    private fun wind(w: Altimeter.Weather): String {
+        val kt = w.windKt ?: return "wind --"
+        if (kt == 0) return "wind calm"
+        val dir = w.windDir
+        val d = if (dir == null || dir < 0) "VRB " else String.format(Locale.US, "%03d°", dir)
+        val g = w.gustKt?.let { String.format(Locale.US, " G%2d", it.coerceAtMost(99)) } ?: ""
+        return "wind $d" + String.format(Locale.US, "/%2dkt", kt.coerceAtMost(99)) + g
+    }
+
+    private fun vis(o: OverlayOptions, w: Altimeter.Weather): String {
+        val mi = w.visMi ?: return "vis --"
+        val plus = if (w.visPlus) "+" else ""
+        return if (o.altUnit == "m" || o.speedUnit == "kmh") {
+            val km = mi * 1.609f
+            "vis " + (if (km >= 10) String.format(Locale.US, "%.0f", km) else String.format(Locale.US, "%.1f", km)) + plus + "km"
+        } else {
+            "vis " + (if (mi >= 3) String.format(Locale.US, "%.0f", mi) else String.format(Locale.US, "%.1f", mi)) + plus + "mi"
+        }
+    }
+
+    private fun clouds(o: OverlayOptions, w: Altimeter.Weather): String {
+        val c = w.cloudCover ?: return "sky --"
+        if (c in setOf("CLR", "SKC", "NSC", "NCD", "CAVOK")) return "clear sky"
+        val base = w.cloudBaseFt ?: return c
+        return if (o.altUnit == "m") "$c ${(base * 0.3048).roundToInt()}m" else "$c ${base}ft"
+    }
+
+    private fun qnh(o: OverlayOptions, hpa: Float?): String = when {
+        o.altUnit == "m" && hpa != null -> String.format(Locale.US, "Q%4d", hpa.roundToInt())
+        o.altUnit == "m" -> "Q----"
+        hpa != null -> String.format(Locale.US, "A%5.2f", hpa / 33.8639f)
+        else -> "A--.--"
+    }
+
+    /** Selected METAR details, each at a fixed width; dashes until a report arrives. */
+    private fun weatherLine(o: OverlayOptions, v: Sample): String {
+        if (o.weather.isEmpty()) return ""
+        val w = v.wx
+        val parts = ArrayList<String>()
+        for (f in WEATHER_ORDER) {
+            if (f !in o.weather) continue
+            parts.add(when (f) {
+                "station" -> fit(v.station ?: "----", 4)
+                "temp" -> temp(o, w.tempC)
+                "dew" -> "dew " + temp(o, w.dewC)
+                "rh" -> w.rhPercent?.let { String.format(Locale.US, "RH %3d%%", it) } ?: "RH  --%"
+                "wind" -> fit(wind(w), 18)
+                "vis" -> fit(vis(o, w), 10)
+                "clouds" -> fit(clouds(o, w), 12)
+                "wx" -> fit(w.wx ?: "", WX_W)
+                "qnh" -> qnh(o, v.qnhHpa)
+                else -> ""
+            })
+        }
+        return parts.joinToString("  ")
     }
 }

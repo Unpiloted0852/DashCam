@@ -118,6 +118,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onStart() {
         super.onStart()
+        applyOrientationLayout()   // stamp options may have changed in Settings
         if (settings.keepScreenOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         // "Start recording when the app opens": every time the app comes to the front,
@@ -179,7 +180,12 @@ class MainActivity : AppCompatActivity() {
         (controls.layoutParams as FrameLayout.LayoutParams).apply {
             // Portrait: the video sits at the top, so the controls go in the empty space below it.
             // Landscape: lift them above the text stamp.
-            bottomMargin = dp(if (portrait) 28 else 60)
+            // Portrait: below the video. Landscape: just above the stamp, however many lines it has.
+            bottomMargin = if (portrait) dp(28) else {
+                val opts = settings.overlayOptions("FRONT")
+                val lines = Telemetry.overlayTemplate(opts, false).size
+                (lines * opts.textSize * resources.displayMetrics.heightPixels).toInt() + dp(10)
+            }
         }.also { controls.layoutParams = it }
         // Portrait is narrow: icon-only buttons so the row fits.
         findViewById<Button>(R.id.clipsBtn).text = if (portrait) "🎞" else "🎞 Clips"
@@ -257,8 +263,13 @@ class MainActivity : AppCompatActivity() {
     /** Things that change continuously: speed, GPS, record timer. */
     private fun renderLive() {
         val mps = Telemetry.speedMps()
-        speedMph.text = if (mps != null) "${Telemetry.mph(mps).roundToInt()} mph" else "-- mph"
-        speedKph.text = if (mps != null) "${Telemetry.kph(mps).roundToInt()} km/h" else "-- km/h"
+        val mphText = if (mps != null) "${Telemetry.mph(mps).roundToInt()} mph" else "-- mph"
+        val kphText = if (mps != null) "${Telemetry.kph(mps).roundToInt()} km/h" else "-- km/h"
+        when (settings.speedUnit) {
+            "kmh" -> { speedMph.text = kphText; speedKph.visibility = View.GONE }
+            "mph" -> { speedMph.text = mphText; speedKph.visibility = View.GONE }
+            else -> { speedMph.text = mphText; speedKph.text = kphText; speedKph.visibility = View.VISIBLE }
+        }
         val fix = Telemetry.freshFix()
         gpsStatus.text = if (fix != null)
             "GPS ±${fix.accuracy.roundToInt()} m · ${Telemetry.satsUsed} sats"
