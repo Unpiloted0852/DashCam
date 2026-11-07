@@ -14,10 +14,7 @@ import java.util.Date
 import java.util.Locale
 
 /** Shared segment timeline so front and rear clips get identical names and boundaries. */
-class SegmentClock(@Volatile private var startMs: Long, private val lengthMs: Long) {
-    /** Begin a new run of segments now (e.g. after the phone was rotated). */
-    fun restart() { startMs = TrueTime.nowMs() }
-
+class SegmentClock(private val startMs: Long, private val lengthMs: Long) {
     fun indexNow(): Long = (TrueTime.nowMs() - startMs).coerceAtLeast(0) / lengthMs
     fun fileName(index: Long, tag: String): String {
         val f = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US)
@@ -35,7 +32,7 @@ class SegmentMuxer(
     private val volume: String,
     @Volatile var expectAudio: Boolean,
     private val clock: SegmentClock,
-    private val onClosed: (uri: Uri, locked: Boolean) -> Unit,
+    private val onClosed: (uri: Uri, locked: Boolean, tag: String) -> Unit,
 ) {
     private var videoFormat: MediaFormat? = null
     private var audioFormat: MediaFormat? = null
@@ -49,6 +46,8 @@ class SegmentMuxer(
     private var prevUri: Uri? = null
     private var prevLocked = false
     private var waitingForAudioSince = 0L
+    private var firstPtsUs = -1L   // monotonic presentation times of this file's first/last frame
+    private var lastPtsUs = -1L
     @Volatile var lastError: String? = null; private set
 
     val currentUri: Uri? @Synchronized get() = uri
@@ -72,6 +71,8 @@ class SegmentMuxer(
             }
         }
         val m = muxer ?: return
+        if (firstPtsUs < 0) firstPtsUs = info.presentationTimeUs
+        lastPtsUs = info.presentationTimeUs
         try {
             m.writeSampleData(vTrack, buf, info)
         } catch (e: Exception) {
@@ -106,12 +107,6 @@ class SegmentMuxer(
         closeCurrent()
     }
 
-    /** Finish the current file; the next key frame (possibly in a new format) starts a new one. */
-    @Synchronized
-    fun closeSegment() {
-        closeCurrent()
-        segIndex = -1
-    }
 
     private fun roll(idx: Long) {
         closeCurrent()
@@ -126,6 +121,7 @@ class SegmentMuxer(
             aTrack = audioFormat?.let { m.addTrack(it) } ?: -1
             m.start()
             muxer = m; pfd = fd; uri = u; segIndex = idx
+            firstPtsUs = -1L; lastPtsUs = -1L
             Storage.recordStart(ctx, clock.fileName(idx, tag), TrueTime.nowMs())
             lastError = null
             Log.i(TAG, "new segment $u")
@@ -157,7 +153,8 @@ class SegmentMuxer(
             // Move to Locked/ before loop deletion is allowed to see the clip.
             if (lockCurrent) Storage.lock(ctx, u)
             Storage.markClosed(u)
-            onClosed(u, lockCurrent)
+            EventLog.log("Clip", "$tag: closed, video pts ${firstPtsUs / 1000}..${lastPtsUs / 1000} ms")
+            onClosed(u, lockCurrent, tag)
             prevUri = u
             prevLocked = lockCurrent
         }

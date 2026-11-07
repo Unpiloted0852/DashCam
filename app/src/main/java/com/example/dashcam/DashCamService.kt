@@ -83,13 +83,20 @@ class DashCamService : Service(), CameraPipeline.Listener,
     private val followRotation = Runnable {
         if (!recording) return@Runnable
         val cams = listOfNotNull(mainCam, cabinCam).filter { it.isRecording }
-        val clock = recClock
         worker.execute {
-            if (cams.any { it.needsNewClipForRotation() }) {
-                EventLog.log("Rec", "phone rotated to $displayRotationDeg° — starting new clips")
-                clock?.restart()
+            val current = recClock ?: return@execute
+            // A new clip pair shares one fresh start time so front and rear still pair up.
+            val newClock = if (cams.any { it.needsNewClipForRotation() }) {
+                EventLog.log("Rec", "phone rotated to $displayRotationDeg° — continuing in new clips")
+                SegmentClock(TrueTime.nowMs(), settings.segmentMs).also { recClock = it }
+            } else current
+            for (cam in cams) {
+                val old = cam.reorient(newClock) {
+                    SegmentMuxer(this, cam.role.tag, recVolume, recWantAudio && audio != null, newClock,
+                        ::onSegmentClosed).also { audio?.addMuxer(it) }   // new clip gets sound from the start
+                }
+                old?.let { audio?.removeMuxer(it) }
             }
-            cams.forEach { it.reorient() }
         }
     }
 
@@ -366,7 +373,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         }
     }
 
-    private var recClock: SegmentClock? = null
+    @Volatile private var recClock: SegmentClock? = null
     private var recWantAudio = false
 
     fun stopRecording() {
@@ -396,11 +403,18 @@ class DashCamService : Service(), CameraPipeline.Listener,
     fun lockClip() {
         if (!recording) return
         mainCam?.lockClip(); cabinCam?.lockClip()
+        // Also the clip just before (covers a clip that ended because the phone was turned).
+        val previous = lastClosed.values.toList(); lastClosed.clear()
+        if (previous.isNotEmpty()) Thread { previous.forEach { Storage.lock(this, it) } }.start()
         toast = "Clip locked — saved to Movies/DashCam/Locked"
         changed()
     }
 
-    private fun onSegmentClosed(uri: Uri, locked: Boolean) {
+    /** Each camera's most recently finished clip, so Lock also covers the clip before a rotation. */
+    private val lastClosed = java.util.concurrent.ConcurrentHashMap<String, Uri>()
+
+    private fun onSegmentClosed(uri: Uri, locked: Boolean, tag: String) {
+        if (!locked) lastClosed[tag] = uri else lastClosed.remove(tag)
         worker.execute {
             Storage.enforceLimit(this, recVolume, settings.storageLimitBytes)
         }

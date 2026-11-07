@@ -107,6 +107,13 @@ class CameraPipeline(
     private var encEgl: EGLSurface? = null
     private var recAngle = 0
     private var recSize = Size(0, 0)
+
+    /** After a rotation the old encoder keeps receiving frames briefly so the clips overlap. */
+    private class Retiring(
+        val egl: EGLSurface, val codec: MediaCodec?, val angle: Int, val size: Size,
+        var overlay: OverlayTexture?, val untilElapsed: Long,
+    )
+    private var retiring: Retiring? = null
     private var lastSyncIdx = -1L
     private var frames = 0
     private var fpsWindowStart = 0L
@@ -181,6 +188,18 @@ class CameraPipeline(
             val ts = t.timestamp
             val frameWall = TrueTime.atElapsedNs(toElapsedNs(ts))
 
+            retiring?.let { r ->
+                e.makeCurrent(r.egl)
+                val ov = overlayFor(r.overlay, r.size).also { r.overlay = it }
+                ov.update(overlayOptions, frameWall)
+                GLES20.glViewport(0, 0, r.size.width, r.size.height)
+                buildMvp(r.angle)
+                drawer?.drawCamera(oesTex, stMatrix, mvp)
+                ov.draw()
+                e.setPresentationTime(r.egl, toMonotonicNs(ts))
+                e.swap(r.egl)
+                if (SystemClock.elapsedRealtime() >= r.untilElapsed) finishRetiring()
+            }
             encEgl?.let { s ->
                 e.makeCurrent(s)
                 val ov = overlayFor(encOverlay, recSize).also { encOverlay = it }
@@ -326,77 +345,122 @@ class CameraPipeline(
 
     private var recBitrate = 0
 
+    /** A configured, started encoder that isn't drawn to yet. Can be built on any thread. */
+    private class PreparedEncoder(
+        val codec: MediaCodec, val input: Surface, val latch: CountDownLatch, val size: Size, val angle: Int,
+    )
+
+    private fun prepareEncoder(m: SegmentMuxer, angle: Int): PreparedEncoder {
+        val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        try {
+            val out = encoderSize(codec, outputSize(angle))
+            val fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, out.width, out.height).apply {
+                setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                setInteger(MediaFormat.KEY_BIT_RATE, recBitrate)
+                setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+                setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+            }
+            val latch = CountDownLatch(1)
+            codec.setCallback(EncoderCallback(m, latch), enc)
+            codec.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+            val input = codec.createInputSurface()
+            codec.start()
+            return PreparedEncoder(codec, input, latch, out, angle)
+        } catch (ex: Exception) {
+            runCatching { codec.release() }
+            throw ex
+        }
+    }
+
     /** GL thread: create an encoder for the current orientation, feeding [m]. */
     private fun startEncoder(m: SegmentMuxer, c: SegmentClock): String? {
         val e = egl ?: return "camera not ready"
-        val bitrate = recBitrate
-        var err: String? = null
-        run {
-            try {
-                val angle = currentAngle()
-                val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-                val out = encoderSize(codec, outputSize(angle))
-                val fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, out.width, out.height).apply {
-                    setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                    setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-                    setInteger(MediaFormat.KEY_FRAME_RATE, 30)
-                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-                }
-                val latch = CountDownLatch(1)
-                codec.setCallback(EncoderCallback(m, latch), enc)
-                codec.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-                val input = codec.createInputSurface()
-                codec.start()
-                encEgl = e.createWindowSurface(input)
-                encoder = codec; encInput = input; muxer = m; clock = c; eos = latch
-                recAngle = angle; recSize = out
-                lastSyncIdx = c.indexNow()
-            } catch (ex: Exception) {
-                Log.e(TAG, "encoder start failed", ex)
-                EventLog.log("Enc", "${role.label} encoder start failed: ${ex.message}")
-                err = "${role.label} encoder failed: ${ex.message}"
-            }
+        return try {
+            val p = prepareEncoder(m, currentAngle())
+            encEgl = e.createWindowSurface(p.input)
+            encoder = p.codec; encInput = p.input; muxer = m; clock = c; eos = p.latch
+            recAngle = p.angle; recSize = p.size
+            lastSyncIdx = c.indexNow()
+            null
+        } catch (ex: Exception) {
+            Log.e(TAG, "encoder start failed", ex)
+            EventLog.log("Enc", "${role.label} encoder start failed: ${ex.message}")
+            "${role.label} encoder failed: ${ex.message}"
         }
-        return err
+    }
+
+    /** GL thread: stop feeding the old encoder and tell it to finish its file. */
+    private fun finishRetiring() {
+        val r = retiring ?: return
+        retiring = null
+        egl?.let { it.makeCurrent(pbuffer!!); it.releaseSurface(r.egl) }
+        r.overlay?.release()
+        try { r.codec?.signalEndOfInputStream() } catch (_: Exception) {}
     }
 
     /** True if the phone has turned between portrait and landscape since this clip started. */
     fun needsNewClipForRotation(): Boolean = isRecording && outputSize(currentAngle()) != outputSize(recAngle)
 
     /**
-     * Blocking; call off the main thread. Makes the recording follow the phone's orientation:
-     * a 180° flip just rotates the picture, while portrait <-> landscape finishes the current clip
-     * and continues in a new clip with the new shape. Returns true if a new clip was started.
+     * Blocking; call off the main thread. Makes the recording follow the phone's orientation.
+     * A 180° flip just rotates the picture. Portrait <-> landscape continues in a new clip with no
+     * gap: the new encoder is prepared while the old one keeps recording, frames switch over
+     * between one camera frame and the next, and the old clip is finished in the background.
+     * [makeMuxer] supplies the new clip's muxer. Returns the old (now closed) muxer, or null if no
+     * new clip was started.
      */
-    fun reorient(): Boolean {
-        val m = muxer ?: return false
-        var restart = false
+    fun reorient(newClock: SegmentClock, makeMuxer: () -> SegmentMuxer): SegmentMuxer? {
+        val oldMuxer = muxer ?: return null
+        var angle = 0
+        var needNew = false
+        runOnGl {
+            angle = currentAngle()
+            if (outputSize(angle) == outputSize(recAngle)) recAngle = angle else needNew = true
+        }
+        if (!needNew) return null
+        val newMuxer = makeMuxer()
+        val prepared = try { prepareEncoder(newMuxer, angle) } catch (ex: Exception) {
+            EventLog.log("Rec", "${role.label} could not switch orientation: ${ex.message} — keeping current clip")
+            newMuxer.close()
+            return null
+        }
         var oldCodec: MediaCodec? = null
         var oldLatch: CountDownLatch? = null
         var oldInput: Surface? = null
-        runOnGl {
-            val angle = currentAngle()
-            if (outputSize(angle) == outputSize(recAngle)) { recAngle = angle; return@runOnGl }
-            restart = true
-            encEgl?.let { s -> egl?.let { it.makeCurrent(pbuffer!!); it.releaseSurface(s) } }
-            encEgl = null
-            encOverlay?.release(); encOverlay = null
+        var swapped = false
+        runOnGl(10_000) {
+            val e = egl ?: return@runOnGl
+            val newEgl = try { e.createWindowSurface(prepared.input) } catch (_: Exception) { return@runOnGl }
+            finishRetiring()   // a previous overlap still running (very quick double turn)
             oldCodec = encoder; oldLatch = eos; oldInput = encInput
-            encoder = null; eos = null; encInput = null
-            try { oldCodec?.signalEndOfInputStream() } catch (_: Exception) {}
+            // Keep feeding the old clip for a second so the two clips overlap: no frame is lost
+            // even if the new encoder is slow to produce its first frames.
+            encEgl?.let { old ->
+                retiring = Retiring(old, oldCodec, recAngle, recSize, encOverlay, SystemClock.elapsedRealtime() + 1000)
+            }
+            encOverlay = null
+            encEgl = newEgl; encoder = prepared.codec; eos = prepared.latch; encInput = prepared.input
+            muxer = newMuxer; clock = newClock
+            recAngle = prepared.angle; recSize = prepared.size
+            lastSyncIdx = newClock.indexNow()
+            swapped = true
         }
-        if (!restart) return false
-        oldLatch?.await(3, TimeUnit.SECONDS)
+        if (!swapped) {
+            runCatching { prepared.codec.stop() }; runCatching { prepared.codec.release() }; prepared.input.release()
+            newMuxer.close()
+            return null
+        }
+        // The old clip ends by itself after the overlap (or right away if no frames arrive).
+        if (oldLatch?.await(1500, TimeUnit.MILLISECONDS) != true) {
+            runOnGl { finishRetiring() }
+            oldLatch?.await(3, TimeUnit.SECONDS)
+        }
         try { oldCodec?.stop() } catch (_: Exception) {}
         try { oldCodec?.release() } catch (_: Exception) {}
         oldInput?.release()
-        m.closeSegment()
-        val c = clock ?: return false
-        var err: String? = null
-        runOnGl(10_000) { err = startEncoder(m, c) }
-        EventLog.log("Rec", "${role.label} now ${recSize.width}x${recSize.height} after rotation" +
-            (err?.let { " — FAILED: $it" } ?: ""))
-        return err == null
+        oldMuxer.close()
+        EventLog.log("Rec", "${role.label} now ${recSize.width}x${recSize.height} after rotation (clips overlap)")
+        return oldMuxer
     }
 
     /** Largest size <= [want] (same shape) that this encoder accepts, e.g. portrait 4K often isn't. */
@@ -418,6 +482,7 @@ class CameraPipeline(
         var codec: MediaCodec? = null
         var latch: CountDownLatch? = null
         runOnGl {
+            finishRetiring()
             encEgl?.let { s -> egl?.let { it.makeCurrent(pbuffer!!); it.releaseSurface(s) } }
             encEgl = null
             encOverlay?.release(); encOverlay = null
@@ -650,6 +715,7 @@ class CameraPipeline(
             val e = egl ?: return@runOnGl
             try {
                 e.makeCurrent(pbuffer!!)
+                finishRetiring()
                 previewEgl?.let { e.releaseSurface(it) }; previewEgl = null
                 encEgl?.let { e.releaseSurface(it) }; encEgl = null
                 encOverlay?.release(); encOverlay = null
