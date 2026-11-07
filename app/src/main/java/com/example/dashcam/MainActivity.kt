@@ -185,7 +185,9 @@ class MainActivity : AppCompatActivity() {
             // Portrait: below the video. Landscape: just above the stamp, however many lines it has.
             bottomMargin = if (portrait) dp(28) else {
                 val opts = settings.overlayOptions("FRONT")
-                val lines = Telemetry.overlayTemplate(opts, false).size
+                val h = resources.displayMetrics.heightPixels
+                val w = h * 16 / 9   // landscape video frame as shown on screen
+                val lines = Telemetry.overlayTemplate(opts, false, OverlayTexture.maxCharsFor(w, h, opts.textSize)).size
                 (lines * opts.textSize * resources.displayMetrics.heightPixels).toInt() + dp(10)
             }
         }.also { controls.layoutParams = it }

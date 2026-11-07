@@ -9,6 +9,7 @@ import android.Manifest
 import android.bluetooth.BluetoothManager
 import android.content.pm.PackageManager
 import android.os.Build
+import kotlin.math.pow
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.core.content.ContextCompat
 import androidx.preference.ListPreference
@@ -118,6 +119,7 @@ class SettingsActivity : AppCompatActivity() {
                 summary = "Installed: v${BuildConfig.VERSION_NAME} · github.com/${BuildConfig.UPDATE_REPO}"
                 setOnPreferenceClickListener { Updater.checkNow(requireActivity()); true }
             }
+            findPreference<Preference>("baro_calibrate")?.setOnPreferenceClickListener { calibrateDialog(); true }
             findPreference<Preference>("share_log")?.setOnPreferenceClickListener {
                 EventLog.init(requireContext())
                 val text = EventLog.read().takeLast(200_000).ifEmpty { "(log is empty)" }
@@ -155,8 +157,93 @@ class SettingsActivity : AppCompatActivity() {
                 "Off while this phone is a remote camera" else "Needs a phone that can run both cameras at once"
         }
 
+        // ---- altitude calibration: read the barometer live while settings are open
+        private var liveHpa: Float? = null
+        private val baroListener = object : android.hardware.SensorEventListener {
+            override fun onSensorChanged(e: android.hardware.SensorEvent) {
+                val v = e.values[0]; val prev = liveHpa
+                liveHpa = if (prev == null) v else prev + 0.2f * (v - prev)
+            }
+            override fun onAccuracyChanged(s: android.hardware.Sensor?, a: Int) {}
+        }
+        private val sensors get() = requireContext().getSystemService(android.hardware.SensorManager::class.java)
+        private fun barometer() = sensors?.getDefaultSensor(android.hardware.Sensor.TYPE_PRESSURE)
+
+        override fun onPause() {
+            sensors?.unregisterListener(baroListener)
+            super.onPause()
+        }
+
+        private fun metric() = preferenceManager.sharedPreferences?.getString("stamp_alt_unit", "ft") == "m"
+
+        private fun updateCalibrationSummary() {
+            val pref = findPreference<Preference>("baro_calibrate") ?: return
+            if (barometer() == null) {
+                pref.summary = "This phone has no barometer (altitude comes from GPS)"; pref.isEnabled = false; return
+            }
+            Altimeter.loadCalibration(requireContext())
+            val off = Altimeter.offsetHpa
+            pref.summary = if (off == 0f) "Not calibrated — correct the barometer using a known altitude"
+            else {
+                val ft = -off * 27.3f   // ~27 ft per hPa near sea level; lower pressure reads higher
+                if (metric()) String.format(java.util.Locale.US, "Corrected by %+.1f hPa (≈ %+d m). Tap to recalibrate or reset", off, (ft * 0.3048f).toInt())
+                else String.format(java.util.Locale.US, "Corrected by %+.1f hPa (≈ %+d ft). Tap to recalibrate or reset", off, ft.toInt())
+            }
+        }
+
+        private fun calibrateDialog() {
+            val ctx = requireContext()
+            val raw = liveHpa ?: Altimeter.pressureHpa
+            if (raw == null) {
+                android.widget.Toast.makeText(ctx, "Waiting for the barometer — try again in a moment", android.widget.Toast.LENGTH_SHORT).show()
+                return
+            }
+            val m = Altimeter.metar
+            val qnh = Altimeter.currentQnhHpa()
+            val unit = if (metric()) "m" else "ft"
+            fun shown(ft: Float) = if (metric()) (ft * 0.3048f).toInt() else ft.toInt()
+            val nowFt = (145366.45 * (1.0 - ((raw + Altimeter.offsetHpa) / qnh).toDouble().pow(0.190284))).toFloat()
+            val source = m?.let { String.format(java.util.Locale.US, "%s %.2f inHg", it.station, it.altimHpa / 33.8639f) }
+                ?: "standard pressure — no METAR yet, so today's weather would end up in the correction"
+            val input = android.widget.EditText(ctx).apply {
+                inputType = android.text.InputType.TYPE_CLASS_NUMBER or android.text.InputType.TYPE_NUMBER_FLAG_SIGNED
+                hint = "Known altitude in $unit"
+            }
+            val pad = (20 * resources.displayMetrics.density).toInt()
+            val box = android.widget.FrameLayout(ctx).apply { setPadding(pad, 0, pad, 0); addView(input) }
+            androidx.appcompat.app.AlertDialog.Builder(ctx)
+                .setTitle("Calibrate altitude")
+                .setMessage("Currently showing ${shown(nowFt)} $unit (using $source).\n\n" +
+                    "Stand somewhere with a known altitude (survey marker, airport, topo map) and enter it here.")
+                .setView(box)
+                .setPositiveButton("Calibrate") { _, _ ->
+                    val entered = input.text.toString().trim().toFloatOrNull() ?: return@setPositiveButton
+                    val trueFt = if (metric()) entered / 0.3048f else entered
+                    val off = Altimeter.offsetFor(trueFt, raw, qnh)
+                    if (kotlin.math.abs(off) > Altimeter.MAX_OFFSET_HPA) {
+                        android.widget.Toast.makeText(ctx, "That would be a ${"%.0f".format(off)} hPa correction — too large to be sensor error. Check the altitude and units.", android.widget.Toast.LENGTH_LONG).show()
+                        return@setPositiveButton
+                    }
+                    preferenceManager.sharedPreferences?.edit()?.putFloat(Altimeter.PREF_OFFSET, off)?.apply()
+                    Altimeter.offsetHpa = off
+                    EventLog.log("Baro", String.format(java.util.Locale.US, "calibrated: %+.2f hPa (true %.0f ft, raw %.2f hPa, QNH %.2f hPa%s)",
+                        off, trueFt, raw, qnh, m?.let { " from ${it.station}" } ?: " standard"))
+                    updateCalibrationSummary()
+                }
+                .setNeutralButton("Reset") { _, _ ->
+                    preferenceManager.sharedPreferences?.edit()?.remove(Altimeter.PREF_OFFSET)?.apply()
+                    Altimeter.offsetHpa = 0f
+                    EventLog.log("Baro", "calibration reset")
+                    updateCalibrationSummary()
+                }
+                .setNegativeButton("Cancel", null)
+                .show()
+        }
+
         override fun onResume() {
             super.onResume()
+            barometer()?.let { sensors?.registerListener(baroListener, it, android.hardware.SensorManager.SENSOR_DELAY_NORMAL) }
+            updateCalibrationSummary()
             findPreference<androidx.preference.Preference>("battery_opt")?.summary =
                 if (BatteryHelper.isExempt(requireContext())) "Unrestricted — recording keeps running in the background"
                 else "Currently restricted: Android may pause recording when the screen is off or another app is in front. Tap to allow."

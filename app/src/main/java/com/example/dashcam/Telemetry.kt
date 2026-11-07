@@ -208,11 +208,33 @@ object Telemetry {
         wx = Altimeter.Weather(-40f, -40f, 360, 99, 99, 10f, true, "OVC", 99999, "W".repeat(WX_W)))
 
     /** Lines burned into the video (how many depends on the options and the frame's shape). */
-    fun overlayLines(o: OverlayOptions, portrait: Boolean, wallMs: Long = TrueTime.nowMs()): List<String> =
-        format(o, portrait, currentSample(), wallMs)
+    fun overlayLines(o: OverlayOptions, portrait: Boolean, wallMs: Long = TrueTime.nowMs(),
+                     maxChars: Int = Int.MAX_VALUE): List<String> =
+        wrap(format(o, portrait, currentSample(), wallMs), maxChars)
 
     /** Same layout filled with the widest possible values. */
-    fun overlayTemplate(o: OverlayOptions, portrait: Boolean): List<String> = format(o, portrait, WIDEST, TrueTime.nowMs())
+    fun overlayTemplate(o: OverlayOptions, portrait: Boolean, maxChars: Int = Int.MAX_VALUE): List<String> =
+        wrap(format(o, portrait, WIDEST, TrueTime.nowMs()), maxChars)
+
+    /**
+     * Lay out groups of fields as lines of at most [maxChars] characters, breaking only between
+     * whole fields. Fields have fixed widths, so the breaks never move from second to second.
+     */
+    private fun wrap(groups: List<List<String>>, maxChars: Int): List<String> {
+        val out = ArrayList<String>()
+        for (fields in groups) {
+            var line = ""
+            for (f in fields) {
+                line = when {
+                    line.isEmpty() -> f
+                    line.length + 2 + f.length <= maxChars -> "$line  $f"
+                    else -> { out.add(line); f }
+                }
+            }
+            if (line.isNotEmpty()) out.add(line)
+        }
+        return out
+    }
 
     /** Fit [s] to exactly [w] characters so a field never changes width. */
     private fun fit(s: String, w: Int): String = if (s.length > w) s.take(w - 1) + "…" else s.padEnd(w)
@@ -223,7 +245,8 @@ object Telemetry {
      * Every enabled field has a fixed width (monospace font), so the text never shifts or changes
      * length from one second to the next, with or without GPS or a METAR.
      */
-    private fun format(o: OverlayOptions, portrait: Boolean, v: Sample, wallMs: Long): List<String> {
+    /** The stamp as groups of fixed-width fields; [wrap] turns them into lines. */
+    private fun format(o: OverlayOptions, portrait: Boolean, v: Sample, wallMs: Long): List<List<String>> {
         val pattern = if (o.clock12h) "yyyy-MM-dd  hh:mm:ss a z" else "yyyy-MM-dd  HH:mm:ss z"
         val fmt = SimpleDateFormat(pattern, Locale.US).apply {
             timeZone = if (o.utc) TimeZone.getTimeZone("UTC") else TimeZone.getDefault()
@@ -269,23 +292,22 @@ object Telemetry {
         }
         if (o.showSats) motion.add(String.format(Locale.US, "%2d sats", v.satsUsed.coerceAtMost(99)))
 
-        val weather = weatherLine(o, v)
+        val weather = weatherFields(o, v)
 
-        val lines = ArrayList<String>()
+        // Groups always start on a new line; within a group, fields wrap as space allows.
+        val groups = ArrayList<List<String>>()
+        groups.add(listOfNotNull(time, place))
         if (portrait) {
-            lines.add(time)
-            if (place != null) lines.add(place)
-            if (position.isNotEmpty()) lines.add(position)
-            if (motion.isNotEmpty()) lines.add(motion.joinToString("  "))
+            if (position.isNotEmpty()) groups.add(listOf(position))
+            if (motion.isNotEmpty()) groups.add(motion)
         } else {
-            lines.add(if (place != null) "$time   $place" else time)
             val parts = ArrayList<String>()
             if (position.isNotEmpty()) parts.add(position)
             parts.addAll(motion)
-            if (parts.isNotEmpty()) lines.add(parts.joinToString("  "))
+            if (parts.isNotEmpty()) groups.add(parts)
         }
-        if (weather.isNotEmpty()) lines.add(weather)
-        return lines
+        if (weather.isNotEmpty()) groups.add(weather)
+        return groups
     }
 
     private fun temp(o: OverlayOptions, c: Float?): String {
@@ -298,9 +320,10 @@ object Telemetry {
         val kt = w.windKt ?: return "wind --"
         if (kt == 0) return "wind calm"
         val dir = w.windDir
-        val d = if (dir == null || dir < 0) "VRB " else String.format(Locale.US, "%03d°", dir)
-        val g = w.gustKt?.let { String.format(Locale.US, " G%2d", it.coerceAtMost(99)) } ?: ""
-        return "wind $d" + String.format(Locale.US, "/%2dkt", kt.coerceAtMost(99)) + g
+        val d = if (dir == null || dir < 0) "VRB" else String.format(Locale.US, "%03d°", dir)
+        val g = w.gustKt?.let { " G${it.coerceAtMost(99)}" } ?: ""
+        // The whole field is padded to a fixed width by fit(), so no padding inside it.
+        return "wind $d/${kt.coerceAtMost(99)}kt$g"
     }
 
     private fun vis(o: OverlayOptions, w: Altimeter.Weather): String {
@@ -329,8 +352,8 @@ object Telemetry {
     }
 
     /** Selected METAR details, each at a fixed width; dashes until a report arrives. */
-    private fun weatherLine(o: OverlayOptions, v: Sample): String {
-        if (o.weather.isEmpty()) return ""
+    private fun weatherFields(o: OverlayOptions, v: Sample): List<String> {
+        if (o.weather.isEmpty()) return emptyList()
         val w = v.wx
         val parts = ArrayList<String>()
         for (f in WEATHER_ORDER) {
@@ -348,6 +371,6 @@ object Telemetry {
                 else -> ""
             })
         }
-        return parts.joinToString("  ")
+        return parts
     }
 }

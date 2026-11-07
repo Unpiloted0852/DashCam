@@ -8,6 +8,7 @@ import android.hardware.SensorManager
 import android.location.Location
 import android.os.SystemClock
 import android.util.Log
+import androidx.preference.PreferenceManager
 import org.json.JSONArray
 import java.net.HttpURLConnection
 import java.net.URL
@@ -90,7 +91,31 @@ object Altimeter : SensorEventListener {
     private var exec: ScheduledExecutorService? = null
     private var lastAttempt = 0L
 
+    /** User calibration: added to the sensor reading to correct a phone whose barometer reads off. */
+    @Volatile var offsetHpa = 0f
+
+    const val PREF_OFFSET = "baro_offset_hpa"
+    /** Larger corrections than this are almost certainly a typo, not sensor error (~±550 ft). */
+    const val MAX_OFFSET_HPA = 20f
+
+    fun loadCalibration(ctx: Context) {
+        offsetHpa = PreferenceManager.getDefaultSharedPreferences(ctx).getFloat(PREF_OFFSET, 0f)
+    }
+
+    /**
+     * The correction that makes a raw reading of [rawHpa] show [trueFt] with altimeter setting
+     * [qnhHpa] (the inverse of the altitude formula).
+     */
+    fun offsetFor(trueFt: Float, rawHpa: Float, qnhHpa: Float): Float {
+        val trueHpa = qnhHpa * (1.0 - trueFt / 145366.45).pow(1.0 / 0.190284)
+        return (trueHpa - rawHpa).toFloat()
+    }
+
+    /** Altimeter setting currently in use (the METAR's, or standard pressure). */
+    fun currentQnhHpa(): Float = metar?.altimHpa ?: STD_HPA
+
     fun start(ctx: Context) {
+        loadCalibration(ctx)
         if (sm != null) return
         val m = ctx.getSystemService(SensorManager::class.java) ?: return
         sm = m
@@ -128,7 +153,7 @@ object Altimeter : SensorEventListener {
 
     /** Altitude in feet, or null if there's no barometer reading. */
     fun altitudeFt(): Float? {
-        val p = pressureHpa ?: return null
+        val p = (pressureHpa ?: return null) + offsetHpa
         val qnh = metar?.altimHpa ?: STD_HPA
         return (145366.45 * (1.0 - (p / qnh).toDouble().pow(0.190284))).toFloat()
     }
