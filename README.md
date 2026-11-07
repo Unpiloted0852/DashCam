@@ -22,8 +22,9 @@ Android dashcam that records the road (main/rear-facing camera) and the cabin/re
   distance so it never hunts onto the dash/windshield. On phones without manual focus it falls back to
   autofocus restricted to the road area. Quick toggle on the main screen.
 - **Portrait or landscape:** video takes the shape the phone is held in. Turning the phone between
-  portrait and landscape while recording finishes the clip and continues in a new one in the new
-  shape (front and rear stay paired); a 180° flip just keeps the picture upright.
+  portrait and landscape while recording continues in a new clip in the new shape, with the old
+  and new clips overlapping by about a second so nothing is lost (front and rear stay paired); a
+  180° flip just keeps the picture upright.
 - **Background:** foreground service + wake lock; keeps recording with the screen off or another app
   (navigation) in front. Asks once for an unrestricted-battery exemption.
 - **Loop recording** in 1–10 min clips with a size limit (oldest deleted first) and a 1 GB free-space floor.

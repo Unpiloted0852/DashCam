@@ -25,6 +25,11 @@ class AudioCapture(initial: List<SegmentMuxer>) {
         muxers += m
     }
 
+    /** Stop feeding a clip that has been finished. */
+    fun removeMuxer(m: SegmentMuxer) {
+        muxers -= m
+    }
+
     @Volatile private var running = false
     private var thread: Thread? = null
     private var rec: AudioRecord? = null
