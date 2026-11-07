@@ -69,7 +69,29 @@ class DashCamService : Service(), CameraPipeline.Listener,
     private var previewCabin: Preview? = null
 
     var displayRotationDeg = 0
-        set(v) { field = v; mainCam?.displayRotation = v; cabinCam?.displayRotation = v }
+        set(v) {
+            if (v == field) return
+            field = v; mainCam?.displayRotation = v; cabinCam?.displayRotation = v
+            if (recording) { ui.removeCallbacks(followRotation); ui.postDelayed(followRotation, 800) }
+        }
+
+    /**
+     * The phone was turned while recording. Portrait <-> landscape: both cameras finish their clip
+     * and continue in a new clip pair in the new shape (same start time, so they still pair up).
+     * A 180° flip just rotates the picture.
+     */
+    private val followRotation = Runnable {
+        if (!recording) return@Runnable
+        val cams = listOfNotNull(mainCam, cabinCam).filter { it.isRecording }
+        val clock = recClock
+        worker.execute {
+            if (cams.any { it.needsNewClipForRotation() }) {
+                EventLog.log("Rec", "phone rotated to $displayRotationDeg° — starting new clips")
+                clock?.restart()
+            }
+            cams.forEach { it.reorient() }
+        }
+    }
 
     // ------------------------------------------------------------------ lifecycle
 

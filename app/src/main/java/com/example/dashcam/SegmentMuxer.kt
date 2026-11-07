@@ -14,7 +14,10 @@ import java.util.Date
 import java.util.Locale
 
 /** Shared segment timeline so front and rear clips get identical names and boundaries. */
-class SegmentClock(private val startMs: Long, private val lengthMs: Long) {
+class SegmentClock(@Volatile private var startMs: Long, private val lengthMs: Long) {
+    /** Begin a new run of segments now (e.g. after the phone was rotated). */
+    fun restart() { startMs = TrueTime.nowMs() }
+
     fun indexNow(): Long = (TrueTime.nowMs() - startMs).coerceAtLeast(0) / lengthMs
     fun fileName(index: Long, tag: String): String {
         val f = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US)
@@ -101,6 +104,13 @@ class SegmentMuxer(
     @Synchronized
     fun close() {
         closeCurrent()
+    }
+
+    /** Finish the current file; the next key frame (possibly in a new format) starts a new one. */
+    @Synchronized
+    fun closeSegment() {
+        closeCurrent()
+        segIndex = -1
     }
 
     private fun roll(idx: Long) {

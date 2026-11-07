@@ -288,9 +288,8 @@ class MainActivity : AppCompatActivity() {
     private fun render() {
         val s = service
         val rec = s?.recording == true
-        // The clip's shape is fixed when recording starts, so don't rotate the screen mid-clip.
-        requestedOrientation = if (rec || s?.stopping == true) ActivityInfo.SCREEN_ORIENTATION_LOCKED
-                               else ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+        // Recording follows the phone's orientation (a turn starts a new clip), so never lock it.
+        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_USER
         recBtn.setBackgroundResource(if (rec) R.drawable.stop_button else R.drawable.rec_button)
         recBtn.isEnabled = s != null && !s.stopping
         lockBtn.isEnabled = rec

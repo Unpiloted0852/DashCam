@@ -114,8 +114,8 @@ class CameraPipeline(
     // --- recording state ---
     private var encoder: MediaCodec? = null
     private var encInput: Surface? = null
-    private var muxer: SegmentMuxer? = null
-    private var clock: SegmentClock? = null
+    @Volatile private var muxer: SegmentMuxer? = null
+    @Volatile private var clock: SegmentClock? = null
     private var eos: CountDownLatch? = null
 
     // --- camera thread state ---
@@ -137,6 +137,7 @@ class CameraPipeline(
     /** When the camera last started streaming (elapsedRealtime), 0 if never. */
     @Volatile var startedAt = 0L; private set
     private var opening = false   // camera thread only: an open is in flight
+    private var openAttempt = 0
     @Volatile var fps = 0f; private set
     @Volatile var focusStatus = ""; private set
     val isRecording: Boolean get() = muxer != null
@@ -316,9 +317,21 @@ class CameraPipeline(
 
     /** Returns null on success or an error message. */
     fun startRecording(m: SegmentMuxer, c: SegmentClock, bitrate: Int): String? {
+        recBitrate = bitrate
         var err: String? = null
-        runOnGl {
-            val e = egl ?: run { err = "camera not ready"; return@runOnGl }
+        // Creating an encoder can take a few seconds on slow devices: wait for it properly.
+        runOnGl(10_000) { err = startEncoder(m, c) }
+        return err
+    }
+
+    private var recBitrate = 0
+
+    /** GL thread: create an encoder for the current orientation, feeding [m]. */
+    private fun startEncoder(m: SegmentMuxer, c: SegmentClock): String? {
+        val e = egl ?: return "camera not ready"
+        val bitrate = recBitrate
+        var err: String? = null
+        run {
             try {
                 val angle = currentAngle()
                 val codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
@@ -345,6 +358,45 @@ class CameraPipeline(
             }
         }
         return err
+    }
+
+    /** True if the phone has turned between portrait and landscape since this clip started. */
+    fun needsNewClipForRotation(): Boolean = isRecording && outputSize(currentAngle()) != outputSize(recAngle)
+
+    /**
+     * Blocking; call off the main thread. Makes the recording follow the phone's orientation:
+     * a 180° flip just rotates the picture, while portrait <-> landscape finishes the current clip
+     * and continues in a new clip with the new shape. Returns true if a new clip was started.
+     */
+    fun reorient(): Boolean {
+        val m = muxer ?: return false
+        var restart = false
+        var oldCodec: MediaCodec? = null
+        var oldLatch: CountDownLatch? = null
+        var oldInput: Surface? = null
+        runOnGl {
+            val angle = currentAngle()
+            if (outputSize(angle) == outputSize(recAngle)) { recAngle = angle; return@runOnGl }
+            restart = true
+            encEgl?.let { s -> egl?.let { it.makeCurrent(pbuffer!!); it.releaseSurface(s) } }
+            encEgl = null
+            encOverlay?.release(); encOverlay = null
+            oldCodec = encoder; oldLatch = eos; oldInput = encInput
+            encoder = null; eos = null; encInput = null
+            try { oldCodec?.signalEndOfInputStream() } catch (_: Exception) {}
+        }
+        if (!restart) return false
+        oldLatch?.await(3, TimeUnit.SECONDS)
+        try { oldCodec?.stop() } catch (_: Exception) {}
+        try { oldCodec?.release() } catch (_: Exception) {}
+        oldInput?.release()
+        m.closeSegment()
+        val c = clock ?: return false
+        var err: String? = null
+        runOnGl(10_000) { err = startEncoder(m, c) }
+        EventLog.log("Rec", "${role.label} now ${recSize.width}x${recSize.height} after rotation" +
+            (err?.let { " — FAILED: $it" } ?: ""))
+        return err == null
     }
 
     /** Largest size <= [want] (same shape) that this encoder accepts, e.g. portrait 4K often isn't. */
@@ -410,6 +462,17 @@ class CameraPipeline(
     private fun openCamera() {
         if (released || device != null || opening) return
         opening = true
+        openAttempt++
+        val attempt = openAttempt
+        // Watchdog: if the camera service never answers, give up on this attempt and let the
+        // normal recovery path retry.
+        cam.postDelayed({
+            if (opening && openAttempt == attempt && device == null && !released) {
+                opening = false
+                EventLog.log("Cam", "${role.label} open timed out — retrying")
+                listener.onCameraLost(this, "open timed out", Loss.BORROWED)
+            }
+        }, 10_000)
         try {
             manager.openCamera(cameraId, stateCallback, cam)
         } catch (e: CameraAccessException) {
@@ -434,7 +497,8 @@ class CameraPipeline(
     private val stateCallback = object : CameraDevice.StateCallback() {
         override fun onOpened(d: CameraDevice) {
             opening = false
-            if (released) { d.close(); return }
+            // Late answer to an attempt the watchdog already gave up on, after a newer open succeeded.
+            if (released || (device != null && device != d)) { d.close(); return }
             device = d
             createSession(d)
         }
@@ -601,11 +665,13 @@ class CameraPipeline(
         glThread.quitSafely(); camThread.quitSafely(); encThread.quitSafely()
     }
 
-    private inline fun runOnGl(crossinline block: () -> Unit) {
+    private inline fun runOnGl(timeoutMs: Long = 3000, crossinline block: () -> Unit) {
         if (Thread.currentThread() == glThread) { block(); return }
         val latch = CountDownLatch(1)
         if (gl.post { try { block() } finally { latch.countDown() } }) {
-            latch.await(3, TimeUnit.SECONDS)
+            if (!latch.await(timeoutMs, TimeUnit.MILLISECONDS)) {
+                EventLog.log("GL", "${role.label}: GL task still running after $timeoutMs ms")
+            }
         }
     }
 
