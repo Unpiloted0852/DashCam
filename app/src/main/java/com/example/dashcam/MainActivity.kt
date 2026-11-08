@@ -114,8 +114,118 @@ class MainActivity : AppCompatActivity() {
             startActivity(Intent(this, ClipsActivity::class.java))
         }
 
+        setupLiveView()
         applyOrientationLayout()
         requestPermissions()
+    }
+
+    // ------------------------------------------------------------------ live view of the remote camera
+
+    private lateinit var liveBox: View
+    private lateinit var liveTexture: TextureView
+    private lateinit var liveStatusText: TextView
+    private var liveViewer: LiveViewer? = null
+    private var liveOpen = false
+    private var liveW = 0
+    private var liveH = 0
+    private val livePrefs by lazy { PreferenceManager.getDefaultSharedPreferences(this) }
+
+    private val liveKeepAlive = object : Runnable {
+        override fun run() {
+            if (!liveOpen) return
+            service?.requestLive(true)
+            ticker.postDelayed(this, 8_000)
+        }
+    }
+
+    private val liveBack = object : androidx.activity.OnBackPressedCallback(false) {
+        override fun handleOnBackPressed() = closeLive()
+    }
+
+    private fun setupLiveView() {
+        liveBox = findViewById(R.id.liveBox)
+        liveTexture = findViewById(R.id.liveTexture)
+        liveStatusText = findViewById(R.id.liveStatus)
+        findViewById<Button>(R.id.liveBtn).setOnClickListener { openLive() }
+        linkStatus.setOnClickListener { if (settings.isPrimary) openLive() }
+        findViewById<Button>(R.id.liveCloseBtn).setOnClickListener { closeLive() }
+        findViewById<Button>(R.id.liveMirrorBtn).setOnClickListener {
+            livePrefs.edit().putBoolean("live_mirror", !livePrefs.getBoolean("live_mirror", true)).apply()
+            layoutLive()
+        }
+        liveBox.addOnLayoutChangeListener { _, _, _, _, _, _, _, _, _ -> layoutLive() }
+        onBackPressedDispatcher.addCallback(this, liveBack)
+        liveTexture.surfaceTextureListener = object : TextureView.SurfaceTextureListener {
+            override fun onSurfaceTextureAvailable(st: SurfaceTexture, w: Int, h: Int) { if (liveOpen) startViewer(st) }
+            override fun onSurfaceTextureSizeChanged(st: SurfaceTexture, w: Int, h: Int) {}
+            override fun onSurfaceTextureDestroyed(st: SurfaceTexture): Boolean {
+                liveViewer?.close(); liveViewer = null
+                return true
+            }
+            override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
+        }
+    }
+
+    private fun setLiveStatus(t: String) {
+        liveStatusText.text = t
+        liveStatusText.visibility = if (t.isEmpty()) View.GONE else View.VISIBLE
+    }
+
+    private fun openLive() {
+        val s = service ?: return
+        if (!s.linkConnected) { Toast.makeText(this, "The remote camera isn't connected", Toast.LENGTH_SHORT).show(); return }
+        LiveLink.problem(this)?.let { p ->
+            if (p.startsWith("Nearby") && Build.VERSION.SDK_INT >= 33)
+                permLauncher.launch(arrayOf(Manifest.permission.NEARBY_WIFI_DEVICES))
+            else Toast.makeText(this, p, Toast.LENGTH_LONG).show()
+            return
+        }
+        liveOpen = true
+        liveBack.isEnabled = true
+        liveBox.visibility = View.VISIBLE
+        liveW = 0; liveH = 0
+        setLiveStatus("Asking the remote camera…")
+        s.liveListener = { m -> onLiveAnswer(m) }
+        liveTexture.surfaceTexture?.let { startViewer(it) }
+        ticker.removeCallbacks(liveKeepAlive)
+        ticker.post(liveKeepAlive)
+    }
+
+    private fun startViewer(st: SurfaceTexture) {
+        if (liveViewer != null) return
+        liveViewer = LiveViewer(this, Surface(st), { t -> if (liveOpen) setLiveStatus(t) }) { w, h ->
+            liveW = w; liveH = h; layoutLive()
+        }
+        service?.liveAnswer?.let { onLiveAnswer(it) }
+    }
+
+    private fun onLiveAnswer(m: org.json.JSONObject) {
+        if (!liveOpen) return
+        if (!m.optBoolean("ok")) { setLiveStatus("⚠ Remote camera: ${m.optString("err", "can't show live view")}"); return }
+        liveViewer?.offer(m.getString("ssid"), m.getString("pass"), m.getString("token"))
+    }
+
+    /** Fit the video into the screen, keeping its shape; optionally mirrored like a rear-view mirror. */
+    private fun layoutLive() {
+        val bw = liveBox.width; val bh = liveBox.height
+        if (bw == 0 || bh == 0) return
+        val lp = liveTexture.layoutParams
+        if (liveW > 0 && liveH > 0) {
+            val scale = minOf(bw.toFloat() / liveW, bh.toFloat() / liveH)
+            lp.width = (liveW * scale).toInt(); lp.height = (liveH * scale).toInt()
+        } else { lp.width = bw; lp.height = bh }
+        liveTexture.layoutParams = lp
+        liveTexture.scaleX = if (livePrefs.getBoolean("live_mirror", true)) -1f else 1f
+    }
+
+    private fun closeLive() {
+        if (!liveOpen) return
+        liveOpen = false
+        liveBack.isEnabled = false
+        ticker.removeCallbacks(liveKeepAlive)
+        liveViewer?.close(); liveViewer = null
+        service?.let { it.liveListener = null; it.requestLive(false) }
+        liveBox.visibility = View.GONE
     }
 
     override fun onStart() {
@@ -138,6 +248,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
+        closeLive()
         ticker.removeCallbacks(tick)
         getSystemService(DisplayManager::class.java).unregisterDisplayListener(displayListener)
         service?.let {
@@ -193,6 +304,7 @@ class MainActivity : AppCompatActivity() {
         }.also { controls.layoutParams = it }
         // Portrait is narrow: icon-only buttons so the row fits.
         findViewById<Button>(R.id.clipsBtn).text = if (portrait) "🎞" else "🎞 Clips"
+        findViewById<Button>(R.id.liveBtn).text = if (portrait) "📺" else "📺 Remote"
         lockBtn.text = if (portrait) "🔒" else "🔒 Lock"
         if (::settings.isInitialized && service != null) render()
         // Keep the warning clear of the rear-camera thumbnail in portrait.
@@ -213,6 +325,7 @@ class MainActivity : AppCompatActivity() {
         if (settings.endOnWalking) perms += Manifest.permission.ACTIVITY_RECOGNITION
         if (Build.VERSION.SDK_INT >= 33) perms += Manifest.permission.POST_NOTIFICATIONS
         if (Build.VERSION.SDK_INT >= 31 && settings.linkRole != "normal") perms += Manifest.permission.BLUETOOTH_CONNECT
+        if (Build.VERSION.SDK_INT >= 33 && settings.linkRole != "normal") perms += Manifest.permission.NEARBY_WIFI_DEVICES
         val missing = perms.filter { !hasPerm(it) }
         if (missing.isNotEmpty()) permLauncher.launch(missing.toTypedArray())
     }
@@ -317,6 +430,7 @@ class MainActivity : AppCompatActivity() {
         // Recording follows the phone's orientation (a turn starts a new clip), so never lock it.
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_USER
         recBtn.setBackgroundResource(if (rec) R.drawable.stop_button else R.drawable.rec_button)
+        findViewById<Button>(R.id.liveBtn).visibility = if (settings.isPrimary) View.VISIBLE else View.GONE
         recBtn.isEnabled = s != null && !s.stopping
         lockBtn.isEnabled = rec
         lockBtn.alpha = if (rec) 1f else 0.4f

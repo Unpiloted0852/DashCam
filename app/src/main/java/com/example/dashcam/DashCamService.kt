@@ -151,6 +151,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         PreferenceManager.getDefaultSharedPreferences(this).unregisterOnSharedPreferenceChangeListener(this)
         getSystemService(CameraManager::class.java).unregisterAvailabilityCallback(availability)
         ui.removeCallbacks(retry)
+        stopLive("app closed")
         stopLink()
         audio?.stop(); audio = null
         stopCameras()
@@ -247,7 +248,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
             if (p === cabinCam) cabinOpenFailures = 0
             if (warning?.contains("will resume automatically") == true &&
                 listOfNotNull(mainCam, cabinCam).all { it.cameraOpen }) warning = null
-            if (p === mainCam) startCabin()
+            if (p === mainCam) { startCabin(); liveServer?.let { srv -> worker.execute { p.startLive(srv) } } }
             if (p === cabinCam && warning?.startsWith("This phone doesn't list") == true) warning = null
             changed()
         }
@@ -563,6 +564,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
             if (tickCount % 5 == 0L) sendState()
         } else {
             if (tickCount % 3 == 0L) sendStatus()
+            if (liveServer != null && now0() - liveAskedAt > LIVE_KEEPALIVE_MS) ui.post { stopLive("main phone stopped asking") }
             val now = SystemClock.elapsedRealtime()
             if (lastTimeSync == 0L || now - lastTimeSync > TIME_SYNC_EVERY_MS) { lastTimeSync = now; syncTimeFromPeer() }
         }
@@ -581,7 +583,10 @@ class DashCamService : Service(), CameraPipeline.Listener,
                     sendStatus()
                 }
             }
-            if (state.phase != RemoteLink.Phase.CONNECTED) peerStatus = null
+            if (state.phase != RemoteLink.Phase.CONNECTED) {
+                peerStatus = null
+                if (settings.isRemote) ui.post { stopLive("Bluetooth link lost") }
+            }
             if (was == RemoteLink.Phase.CONNECTED && state.phase != RemoteLink.Phase.CONNECTED && settings.isRemote && recording) {
                 EventLog.log("Link", "main phone gone — still recording; own end-of-drive detection takes over")
             }
@@ -594,6 +599,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
                     .put("unc", TrueTime.uncertaintyMs).put("src", TrueTime.source))
                 "status" -> { peerStatus = m; peerStatusAt = SystemClock.elapsedRealtime(); ui.post { changed() } }
                 "lock" -> ui.post { lockClip(fromPeer = true) }
+                "live" -> ui.post { liveAnswer = m; liveListener?.invoke(m) }
                 "req" -> ui.post {
                     when (m.optString("do")) {
                         "start" -> { startRecording(); if (!recording) sendState() }
@@ -609,6 +615,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
                 }
                 "state" -> ui.post { applyPeerState(m) }
                 "lock" -> ui.post { lockClip(fromPeer = true) }
+                "live" -> ui.post { if (m.optBoolean("on")) liveRequested() else stopLive("main phone closed the view") }
             }
         }
     }
@@ -726,13 +733,75 @@ class DashCamService : Service(), CameraPipeline.Listener,
                 }
             } else {
                 val t = if (TrueTime.linkFresh()) " · time ±${TrueTime.uncertaintyMs} ms" else " · syncing time…"
-                "$who: connected to $name$t"
+                "$who: connected to $name$t" + if (liveServer?.hasClient == true) " · showing live view" else ""
             }
         }
     }
 
+    // ------------------------------------------------------------------ live view (Wi‑Fi Direct)
+
+    private var liveServer: LiveServer? = null
+    private var liveWifi: WifiDirect? = null
+    private var liveCreds: JSONObject? = null
+    @Volatile private var liveAskedAt = 0L
+    private fun now0() = SystemClock.elapsedRealtime()
+
+    /** Main phone: the remote's last answer to a live-view request. */
+    var liveAnswer: JSONObject? = null; private set
+    var liveListener: ((JSONObject) -> Unit)? = null
+
+    /** Main phone: ask the remote for (or keep alive, or end) its live view. */
+    fun requestLive(on: Boolean) {
+        if (!on) liveAnswer = null
+        link?.send("live", JSONObject().put("on", on))
+    }
+
+    val linkConnected: Boolean get() = link?.connected == true
+
+    /** Remote camera: the main phone wants to watch (sent again every few seconds while it does). */
+    private fun liveRequested() {
+        liveAskedAt = now0()
+        liveCreds?.let { link?.send("live", JSONObject(it.toString())); return }
+        if (liveServer != null) return   // group still forming
+        LiveLink.problem(this)?.let { link?.send("live", JSONObject().put("ok", false).put("err", it)); return }
+        val token = LiveLink.randomString(16)
+        val srv = try { LiveServer(token) { mainCam?.requestLiveKeyFrame() } } catch (e: Exception) {
+            link?.send("live", JSONObject().put("ok", false).put("err", "can't open the video port: ${e.message}")); return
+        }
+        liveServer = srv
+        EventLog.log("Live", "main phone wants live view: starting Wi‑Fi Direct")
+        exitIdle()
+        mainCam?.let { c -> worker.execute { c.startLive(srv) } }
+        val ssid = "DIRECT-dc-DashCam-" + LiveLink.randomString(4)
+        val pass = LiveLink.randomString(16)
+        val w = WifiDirect(this).also { liveWifi = it }
+        w.createGroup(ssid, pass, {
+            if (liveServer !== srv) return@createGroup
+            EventLog.log("Live", "Wi‑Fi Direct group $ssid up")
+            liveCreds = JSONObject().put("ok", true).put("ssid", ssid).put("pass", pass).put("token", token)
+            link?.send("live", JSONObject(liveCreds.toString()))
+        }) { err ->
+            if (liveServer !== srv) return@createGroup
+            EventLog.log("Live", "Wi‑Fi Direct: $err")
+            link?.send("live", JSONObject().put("ok", false).put("err", "Wi‑Fi Direct: $err"))
+            stopLive(err)
+        }
+        changed()
+    }
+
+    private fun stopLive(why: String) {
+        val srv = liveServer ?: return
+        EventLog.log("Live", "live view off ($why)")
+        liveServer = null; liveCreds = null
+        srv.stop()
+        liveWifi?.close(); liveWifi = null
+        mainCam?.let { c -> worker.execute { c.stopLive() } }
+        if (!bound && !recording && !stopping && settings.isRemote) enterIdle()
+        changed()
+    }
+
     private fun enterIdle() {
-        if (idle || recording || stopping) return
+        if (idle || recording || stopping || liveServer != null) return
         idle = true
         EventLog.log("Link", "remote camera idle: cameras and GPS off, waiting for the main phone")
         stopCameras()
@@ -824,6 +893,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         const val ACTION_LOCK = "com.example.dashcam.LOCK"
         const val REMOTE_LABEL = "REMOTE"
         private const val TIME_SYNC_EVERY_MS = 60_000L
+        private const val LIVE_KEEPALIVE_MS = 25_000L
         private const val PINGS = 12
     }
 }

@@ -125,6 +125,19 @@ class CameraPipeline(
     @Volatile private var clock: SegmentClock? = null
     private var eos: CountDownLatch? = null
 
+    // --- live view (GL thread): a small low-latency H.264 stream for the main phone's screen ---
+    interface LiveSink {
+        fun onLiveFormat(w: Int, h: Int)
+        /** Encoded data; [config] = SPS/PPS. Called on the encoder thread. */
+        fun onLiveData(data: ByteArray, ptsUs: Long, key: Boolean, config: Boolean)
+    }
+    private var liveCodec: MediaCodec? = null
+    private var liveInput: Surface? = null
+    private var liveEgl: EGLSurface? = null
+    private var liveSize = Size(0, 0)
+    private var liveAngle = 0
+    val liveActive: Boolean get() = liveCodec != null
+
     // --- camera thread state ---
     private var device: CameraDevice? = null
     private var session: CameraCaptureSession? = null
@@ -211,6 +224,14 @@ class CameraPipeline(
                 e.setPresentationTime(s, toMonotonicNs(ts))
                 e.swap(s)
                 maybeRequestKeyFrame()
+            }
+            liveEgl?.let { s ->
+                e.makeCurrent(s)
+                GLES20.glViewport(0, 0, liveSize.width, liveSize.height)
+                buildMvp(liveAngle)
+                drawer?.drawCamera(oesTex, stMatrix, mvp)
+                e.setPresentationTime(s, toMonotonicNs(ts))
+                e.swap(s)
             }
             previewEgl?.let { s ->
                 e.makeCurrent(s)
@@ -331,6 +352,87 @@ class CameraPipeline(
 
     fun setPreviewSize(w: Int, h: Int) {
         gl.post { previewW = w; previewH = h }
+    }
+
+    // ---------------------------------------------------------------- live view
+
+    /** Start the live-view encoder (about [longSide] px on the long side). Idempotent. */
+    fun startLive(sink: LiveSink, longSide: Int = 960, bitrate: Int = 2_500_000) {
+        runOnGl(5000) {
+            val e = egl ?: return@runOnGl
+            if (liveCodec != null) { requestLiveKeyFrame(); return@runOnGl }
+            val angle = currentAngle()
+            val full = outputSize(angle)
+            val scale = minOf(1f, longSide.toFloat() / maxOf(full.width, full.height))
+            val w = ((full.width * scale).toInt() / 16) * 16
+            val h = ((full.height * scale).toInt() / 16) * 16
+            var codec: MediaCodec? = null
+            try {
+                codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                val fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
+                    setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                    setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+                    setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                    setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
+                    setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
+                    setInteger(MediaFormat.KEY_PRIORITY, 0)
+                    if (Build.VERSION.SDK_INT >= 30) setInteger(MediaFormat.KEY_LATENCY, 1)
+                }
+                codec.setCallback(LiveCallback(sink), enc)
+                codec.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                val input = codec.createInputSurface()
+                codec.start()
+                liveEgl = e.createWindowSurface(input)
+                liveCodec = codec; liveInput = input; liveSize = Size(w, h); liveAngle = angle
+                sink.onLiveFormat(w, h)
+                EventLog.log("Live", "${role.label}: live view encoder ${w}x$h")
+            } catch (ex: Exception) {
+                EventLog.log("Live", "live encoder failed: ${ex.message}")
+                try { codec?.release() } catch (_: Exception) {}
+            }
+        }
+    }
+
+    fun requestLiveKeyFrame() {
+        try { liveCodec?.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_REQUEST_SYNC_FRAME, 0) }) }
+        catch (_: Exception) {}
+    }
+
+    fun stopLive() {
+        runOnGl {
+            val e = egl
+            liveEgl?.let { s -> e?.let { it.makeCurrent(pbuffer!!); it.releaseSurface(s) } }
+            liveEgl = null
+            val c = liveCodec
+            liveCodec = null
+            try { c?.stop() } catch (_: Exception) {}
+            try { c?.release() } catch (_: Exception) {}
+            liveInput?.release(); liveInput = null
+            if (c != null) EventLog.log("Live", "${role.label}: live view encoder stopped")
+        }
+    }
+
+    private class LiveCallback(val sink: LiveSink) : MediaCodec.Callback() {
+        override fun onInputBufferAvailable(codec: MediaCodec, index: Int) {}
+        override fun onOutputFormatChanged(codec: MediaCodec, format: MediaFormat) {}
+        override fun onError(codec: MediaCodec, e: MediaCodec.CodecException) {
+            EventLog.log("Live", "live encoder error: ${e.diagnosticInfo}")
+        }
+        override fun onOutputBufferAvailable(codec: MediaCodec, index: Int, info: MediaCodec.BufferInfo) {
+            try {
+                val buf = codec.getOutputBuffer(index)
+                if (buf != null && info.size > 0) {
+                    buf.position(info.offset); buf.limit(info.offset + info.size)
+                    val data = ByteArray(info.size).also { buf.get(it) }
+                    sink.onLiveData(data, info.presentationTimeUs,
+                        info.flags and MediaCodec.BUFFER_FLAG_KEY_FRAME != 0,
+                        info.flags and MediaCodec.BUFFER_FLAG_CODEC_CONFIG != 0)
+                }
+                codec.releaseOutputBuffer(index, false)
+            } catch (_: IllegalStateException) {   // stopped meanwhile
+            } catch (e: Exception) { Log.w(TAG, "live output", e) }
+        }
     }
 
     // ---------------------------------------------------------------- recording
@@ -714,6 +816,7 @@ class CameraPipeline(
 
     fun release() {
         if (isRecording) stopRecording()
+        stopLive()
         released = true
         val camDone = CountDownLatch(1)
         if (cam.post {

@@ -110,6 +110,12 @@
             android:text="⚙" />
 
         <androidx.appcompat.widget.AppCompatButton
+            android:id="@+id/liveBtn"
+            style="@style/CtlButton"
+            android:text="📺 Remote"
+            android:visibility="gone" />
+
+        <androidx.appcompat.widget.AppCompatButton
             android:id="@+id/clipsBtn"
             style="@style/CtlButton"
             android:text="🎞 Clips" />
@@ -132,5 +138,52 @@
             android:background="@drawable/rec_button"
             android:contentDescription="Record" />
     </LinearLayout>
+    </FrameLayout>
+
+    <FrameLayout
+        android:id="@+id/liveBox"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="@android:color/black"
+        android:clickable="true"
+        android:visibility="gone">
+
+        <TextureView
+            android:id="@+id/liveTexture"
+            android:layout_width="match_parent"
+            android:layout_height="match_parent"
+            android:layout_gravity="center" />
+
+        <TextView
+            android:id="@+id/liveStatus"
+            style="@style/Pill"
+            android:layout_gravity="center"
+            android:gravity="center"
+            android:maxWidth="320dp" />
+
+        <TextView
+            android:id="@+id/liveLabel"
+            style="@style/Pill"
+            android:layout_gravity="top|start"
+            android:layout_margin="12dp"
+            android:text="REMOTE CAMERA · LIVE" />
+
+        <LinearLayout
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|end"
+            android:layout_margin="12dp"
+            android:orientation="horizontal">
+
+            <androidx.appcompat.widget.AppCompatButton
+                android:id="@+id/liveMirrorBtn"
+                style="@style/CtlButton"
+                android:text="⇋ Mirror" />
+
+            <androidx.appcompat.widget.AppCompatButton
+                android:id="@+id/liveCloseBtn"
+                style="@style/CtlButton"
+                android:text="✕ Close" />
+        </LinearLayout>
     </FrameLayout>
 </FrameLayout>
