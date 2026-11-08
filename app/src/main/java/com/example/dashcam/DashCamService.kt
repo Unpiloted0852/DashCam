@@ -74,7 +74,11 @@ class DashCamService : Service(), CameraPipeline.Listener,
     var displayRotationDeg = 0
         set(v) {
             if (v == field) return
-            field = v; mainCam?.displayRotation = v; cabinCam?.displayRotation = v
+            field = v
+            // A remote camera is stuck to a window: turning its screen off or on (or bumping it) must not
+            // split the recording into new clips, so it keeps the shape it started with until it stops.
+            if (settings.isRemote && (recording || stopping)) return
+            mainCam?.displayRotation = v; cabinCam?.displayRotation = v
             if (recording) { ui.removeCallbacks(followRotation); ui.postDelayed(followRotation, 800) }
         }
 
@@ -426,6 +430,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
             cams.forEach { it.stopRecording() }
             ui.post {
                 stopping = false
+                listOfNotNull(mainCam, cabinCam).forEach { it.displayRotation = displayRotationDeg }
                 releaseWakeLock()
                 goForeground()
                 if (!bound && settings.isRemote) { pendingRestart = false; enterIdle(); changed(); return@post }
