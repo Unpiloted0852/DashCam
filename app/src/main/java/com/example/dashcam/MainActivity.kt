@@ -189,6 +189,13 @@ class MainActivity : AppCompatActivity() {
         liveTexture.surfaceTexture?.let { startViewer(it) }
         ticker.removeCallbacks(liveKeepAlive)
         ticker.post(liveKeepAlive)
+        ticker.removeCallbacks(liveNoAnswer)
+        ticker.postDelayed(liveNoAnswer, 12_000)
+    }
+
+    private val liveNoAnswer = Runnable {
+        if (liveOpen && service?.liveAnswer == null)
+            setLiveStatus("⚠ No answer from the remote camera — it may run an older DashCam without live view. Update it.")
     }
 
     private fun startViewer(st: SurfaceTexture) {
@@ -222,7 +229,7 @@ class MainActivity : AppCompatActivity() {
         if (!liveOpen) return
         liveOpen = false
         liveBack.isEnabled = false
-        ticker.removeCallbacks(liveKeepAlive)
+        ticker.removeCallbacks(liveKeepAlive); ticker.removeCallbacks(liveNoAnswer)
         liveViewer?.close(); liveViewer = null
         service?.let { it.liveListener = null; it.requestLive(false) }
         liveBox.visibility = View.GONE
