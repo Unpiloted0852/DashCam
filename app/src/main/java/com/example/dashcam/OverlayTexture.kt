@@ -49,11 +49,11 @@ class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: Frame
 
     /** Work out, once per set of options, where every field sits; live values then fill those spots. */
     private fun layoutFor(o: OverlayOptions): Layout {
-        // Re-plan if the options change or the position moves to a different number of degree digits.
-        val key = o to Telemetry.coordDigits()
+        // Re-plan whenever what's planned for changes: options, new METAR, starting/stopping, etc.
+        val template = Telemetry.stampTemplate(o, portrait)
+        val key = template
         layout?.let { if (layoutKey == key) return it }
         layoutKey = key
-        val template = Telemetry.stampTemplate(o, portrait)
         return computeLayout(fill, template, bmp.width - 2 * pad, lineH)
             .also { lay ->
                 layout = lay; stroke.textScaleX = fill.textScaleX
@@ -162,6 +162,7 @@ class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: Frame
                 for (f in group) {
                     val w = paint.measureText(f.text)
                     if (f.right) { out.add(Slot(firstLine, avail - w, w, true)); continue }
+                    if (f.text.isEmpty()) { out.add(Slot(line, x.coerceAtLeast(0f), 0f, false)); continue }
                     if (x >= 0 && x + gap + w > limit) { line++; x = -1f; limit = avail }
                     val left = if (x < 0) 0f else x + gap
                     out.add(Slot(line, left, w, false))

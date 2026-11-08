@@ -43,4 +43,15 @@ class StampLayoutTest {
             Telemetry.stampFields(o, true, 0).forEach { g -> println(g.joinToString("  |  ") { it.text }) }
         }
     }
+
+    /** Standing still with a METAR: plan the real weather text and no heading, not the worst case. */
+    @Test fun stillPlansLiveSlowValues() {
+        val wx = Altimeter.Weather(tempC = 4f, dewC = 3f, windDir = 140, windKt = 1, cloudCover = "FEW", cloudBaseFt = 3500)
+        val cur = Telemetry.Sample(50.98, 6.03, 10, 0f, null, 240, 20, 30, wx = wx)
+        val still = Telemetry.planSample(cur, 2 to 1, moving = false)
+        assertEquals(null, still.bearing); assertEquals(0f, still.mps); assertEquals(888, still.altFt)
+        assertEquals(wx, still.wx)
+        val moving = Telemetry.planSample(cur, 2 to 1, moving = true)
+        assertTrue(moving.bearing != null && (moving.mps ?: 0f) > 30f)
+    }
 }

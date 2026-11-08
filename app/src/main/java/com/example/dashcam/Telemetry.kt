@@ -243,9 +243,32 @@ object Telemetry {
 
     private fun templateSample(): Sample {
         val d = coordDigits() ?: return WIDEST
+        val cur = currentSample()
+        val now = android.os.SystemClock.elapsedRealtime()
+        if (cur.bearing != null || (cur.mps ?: 0f) > 1f) movingUntilMs = now + STILL_MS
+        return planSample(cur, d, moving = now < movingUntilMs)
+    }
+
+    /** Planning keeps room for heading and full speed until the car has stood still this long. */
+    private const val STILL_MS = 60_000L
+    @Volatile private var movingUntilMs = 0L
+
+    /**
+     * What the layout plans for, given the live sample [cur]:
+     * - values that change every second (speed, heading) get their realistic widest form while
+     *   driving, so the stamp doesn't jump around; when standing still they're planned as shown;
+     * - values that change rarely (weather from the METAR, altitude's number of digits) are planned
+     *   as they are now; the stamp re-plans when they change.
+     */
+    internal fun planSample(cur: Sample, d: Pair<Int, Int>, moving: Boolean): Sample {
         fun eights(digits: Int) = ("8".repeat(digits) + ".88888").toDouble()
-        return Sample(-eights(d.first), -eights(d.second), WIDEST.accM, WIDEST.mps, WIDEST.bearing, WIDEST.altFt,
-            WIDEST.satsUsed, WIDEST.satsVisible, WIDEST.place, WIDEST.station, WIDEST.qnhHpa, WIDEST.wx)
+        val alt = cur.altFt?.let { a -> (if (a < 0) "-" else "") + "8".repeat(abs(a).toString().length) }?.toInt()
+            ?: WIDEST.altFt
+        val wx = if (cur.wx == Altimeter.Weather()) WIDEST.wx else cur.wx
+        return Sample(-eights(d.first), -eights(d.second), WIDEST.accM,
+            if (moving) WIDEST.mps else cur.mps, if (moving) WIDEST.bearing else null, alt,
+            WIDEST.satsUsed, WIDEST.satsVisible, WIDEST.place, cur.station ?: WIDEST.station,
+            cur.qnhHpa ?: WIDEST.qnhHpa, wx)
     }
 
     /** Plain text lines (for logs and tests). */
