@@ -141,7 +141,7 @@ class DashSettings(ctx: Context) {
             "auto_stop_walk", "auto_stop_unplug", "auto_stop_minutes",
             "stamp_size", "stamp_clock", "use_utc", "overlay_label", "show_coords", "stamp_accuracy", "stamp_place",
             "stamp_speed", "stamp_heading", "stamp_altitude", "stamp_alt_unit", "stamp_sats", "stamp_weather",
-            "stamp_weather_fields", "stamp_temp_unit")
+            "stamp_weather_fields", "stamp_temp_unit", "stamp_zone")
     }
 }
 

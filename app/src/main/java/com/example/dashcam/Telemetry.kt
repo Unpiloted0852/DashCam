@@ -83,6 +83,12 @@ object Telemetry {
     /** The main phone's live stamp data, if it arrived in the last few seconds. */
     fun relayed(): Sample? = relay?.takeIf { SystemClock.elapsedRealtime() - relayElapsed <= RELAY_FRESH_MS }
 
+    /** Remote camera: the main phone's time zone (this phone may have no network to set its own). */
+    @Volatile private var relayZone: TimeZone? = null
+
+    /** Local time zone for the stamp: the main phone's on a linked remote camera, else this phone's. */
+    fun stampZone(): TimeZone = relayZone ?: TimeZone.getDefault()
+
     /** On the main phone: what the remote camera should stamp. */
     fun relayJson(): JSONObject {
         val v = localSample()
@@ -98,6 +104,7 @@ object Telemetry {
         putW("wg", w.gustKt); putW("vis", w.visMi?.toDouble()); wx.put("visp", w.visPlus); putW("cov", w.cloudCover)
         putW("base", w.cloudBaseFt); putW("wx", w.wx)
         o.put("w", wx)
+        o.put("tz", TimeZone.getDefault().id)
         Altimeter.metar?.let { o.put("mlat", it.lat).put("mlon", it.lon).put("mobs", it.obsEpochSec) }
         return o
     }
@@ -116,6 +123,8 @@ object Telemetry {
         val s = Sample(d("lat"), d("lon"), i("acc"), d("mps")?.toFloat(), d("brg")?.toFloat(), i("alt"),
             o.optInt("su"), o.optInt("sv"), str("place"), str("stn"), d("qnh")?.toFloat(), wx)
         relay = s; relayElapsed = SystemClock.elapsedRealtime()
+        // Kept after the link drops: the main phone's zone is the best one this phone has heard of.
+        str("tz")?.let { id -> if (relayZone?.id != id) relayZone = TimeZone.getTimeZone(id) }
         // Keep the weather and QNH for when the link drops (this phone may have no internet).
         val stn = s.station; val q = s.qnhHpa
         if (stn != null && q != null) Altimeter.adoptRelayed(stn, q, d("mlat") ?: s.lat ?: 0.0, d("mlon") ?: s.lon ?: 0.0,
@@ -281,7 +290,7 @@ object Telemetry {
     }
 
     private fun build(o: OverlayOptions, portrait: Boolean, v: Sample, wallMs: Long, widest: Boolean = false): List<List<Field>> {
-        val tz = if (o.utc) TimeZone.getTimeZone("UTC") else TimeZone.getDefault()
+        val tz = if (o.utc) TimeZone.getTimeZone("UTC") else stampZone()
         val fmt = SimpleDateFormat(if (o.clock12h) "yyyy-MM-dd h:mm:ss a" else "yyyy-MM-dd HH:mm:ss", Locale.US)
             .apply { timeZone = tz }
         val clock = if (widest) "2088-12-28 " + (if (o.clock12h) "12:58:58 PM" else "23:58:58")
