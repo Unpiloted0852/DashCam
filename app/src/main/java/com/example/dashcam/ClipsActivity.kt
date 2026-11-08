@@ -488,16 +488,24 @@ class ClipsActivity : AppCompatActivity() {
             val badge = v.findViewById<TextView>(R.id.badge)
             badge.text = when { p.recording -> "●"; p.locked -> "🔒"; else -> "" }
             badge.setTextColor(if (p.recording) 0xFFE53935.toInt() else title.currentTextColor)
-            val second = p.rear ?: p.remote?.takeIf { p.front != null }
-            loadThumb(v.findViewById(R.id.thumbFront), if (p.recording) null else (p.front ?: p.remote)?.uri)
+            // Big slot: front (or the remote when this phone recorded nothing); small: rear; third: remote.
+            val frontIv = v.findViewById<ImageView>(R.id.thumbFront)
             val rearIv = v.findViewById<ImageView>(R.id.thumbRear)
-            loadThumb(rearIv, if (p.recording) null else second?.uri)
-            rearIv.visibility = if (second != null) View.VISIBLE else View.INVISIBLE
-            if (rc != null && !p.recording) {
-                // Show the remote's picture in the free slot (the big one if this phone has nothing).
-                if (p.front == null && p.rear == null) loadRemoteThumb(v.findViewById(R.id.thumbFront), rc)
-                else if (second == null) { rearIv.visibility = View.VISIBLE; loadRemoteThumb(rearIv, rc) }
+            val remoteIv = v.findViewById<ImageView>(R.id.thumbRemote)
+            val remoteInBig = p.front == null && p.rear == null
+            if (remoteInBig && rc != null && !p.recording) loadRemoteThumb(frontIv, rc)
+            else loadThumb(frontIv, if (p.recording) null else (p.front ?: p.remote?.takeIf { p.rear == null })?.uri)
+            loadThumb(rearIv, if (p.recording) null else p.rear?.uri)
+            rearIv.visibility = if (p.rear != null) View.VISIBLE else View.GONE
+            val remoteSmall = !remoteInBig && (p.remote != null && (p.front != null || p.rear != null) || rc != null)
+            remoteIv.visibility = if (remoteSmall) View.VISIBLE else View.GONE
+            when {
+                !remoteSmall || p.recording -> loadThumb(remoteIv, null)
+                p.remote != null && p.front != null -> loadThumb(remoteIv, p.remote.uri)
+                p.remote != null -> loadThumb(remoteIv, p.remote.uri)
+                rc != null -> loadRemoteThumb(remoteIv, rc)
             }
+            remoteIv.alpha = if (rc != null) 0.75f else 1f
             val sel = selected
             val check = v.findViewById<CheckBox>(R.id.check)
             check.visibility = if (sel != null) View.VISIBLE else View.GONE

@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Plain HTTP only to the remote camera phone on the Wi‑Fi Direct group (clip list/download). -->
+<network-security-config>
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">192.168.49.1</domain>
+    </domain-config>
+</network-security-config>

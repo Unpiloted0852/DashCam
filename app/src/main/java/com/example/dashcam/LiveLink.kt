@@ -103,7 +103,9 @@ class WifiDirect(ctx: Context) {
 
     private fun tryCreate(ssid: String, pass: String, onOk: () -> Unit, onFail: (String) -> Unit, attempt: Int) {
         val c = ch() ?: return onFail("Wi‑Fi Direct unavailable")
-        val cfg = WifiP2pConfig.Builder().setNetworkName(ssid).setPassphrase(pass).build()
+        // 5 GHz first (several times faster for clip downloads); any band if the phone can't.
+        val cfg = WifiP2pConfig.Builder().setNetworkName(ssid).setPassphrase(pass)
+            .apply { if (attempt == 0) setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_5GHZ) }.build()
         mgr!!.removeGroup(c, action("remove", { go(c, cfg, ssid, pass, onOk, onFail, attempt) },
             { go(c, cfg, ssid, pass, onOk, onFail, attempt) }))
     }

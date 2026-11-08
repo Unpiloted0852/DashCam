@@ -28,6 +28,7 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
+        android:networkSecurityConfig="@xml/network_security_config"
         android:hasFragileUserData="true"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"

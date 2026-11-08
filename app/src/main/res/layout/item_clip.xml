@@ -36,6 +36,16 @@
         android:contentDescription="Rear"
         android:scaleType="centerCrop" />
 
+    <ImageView
+        android:id="@+id/thumbRemote"
+        android:layout_width="54dp"
+        android:layout_height="54dp"
+        android:layout_marginStart="4dp"
+        android:background="#222222"
+        android:contentDescription="Remote camera"
+        android:scaleType="centerCrop"
+        android:visibility="gone" />
+
     <LinearLayout
         android:layout_width="0dp"
         android:layout_height="wrap_content"
