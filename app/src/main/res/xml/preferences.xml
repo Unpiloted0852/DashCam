@@ -18,6 +18,9 @@
         <ListPreference app:key="segment_minutes" app:title="Clip length"
             app:entries="@array/segment_labels" app:entryValues="@array/segment_values"
             app:defaultValue="3" app:useSimpleSummaryProvider="true" />
+        <ListPreference app:key="clip_storage" app:title="Clip privacy"
+            app:entries="@array/clip_storage_labels" app:entryValues="@array/clip_storage_values"
+            app:defaultValue="private" app:useSimpleSummaryProvider="true" />
         <ListPreference app:key="storage_volume" app:title="Save clips to"
             app:defaultValue="external_primary" app:useSimpleSummaryProvider="true" />
         <ListPreference app:key="storage_limit_gb" app:title="Loop recording limit"

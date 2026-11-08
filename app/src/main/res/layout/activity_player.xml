@@ -106,6 +106,7 @@
             <androidx.appcompat.widget.AppCompatButton android:id="@+id/modeRear" style="@style/CtlButton" android:text="Rear" />
             <androidx.appcompat.widget.AppCompatButton android:id="@+id/lockBtn" style="@style/CtlButton" android:layout_marginStart="20dp" android:text="🔒 Lock" />
             <androidx.appcompat.widget.AppCompatButton android:id="@+id/shareBtn" style="@style/CtlButton" android:text="Share" />
+            <androidx.appcompat.widget.AppCompatButton android:id="@+id/saveBtn" style="@style/CtlButton" android:text="Save to gallery" />
             <androidx.appcompat.widget.AppCompatButton android:id="@+id/deleteBtn" style="@style/CtlButton" android:text="Delete" />
         </LinearLayout>
     </HorizontalScrollView>

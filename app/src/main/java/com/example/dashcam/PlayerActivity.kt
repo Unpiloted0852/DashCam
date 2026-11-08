@@ -97,10 +97,11 @@ class PlayerActivity : AppCompatActivity() {
         if (frontUri == null || rearUri == null) {
             listOf(R.id.modeFront, R.id.modeBoth, R.id.modeRear).forEach { findViewById<View>(it).visibility = View.GONE }
         }
-        lockBtn.setOnClickListener { pair?.let { actions.setLocked(it, !it.locked) } }
-        findViewById<Button>(R.id.shareBtn).setOnClickListener { pair?.let { actions.share(it) } }
+        lockBtn.setOnClickListener { pair?.let { actions.setLocked(listOf(it), !it.locked) } }
+        findViewById<Button>(R.id.shareBtn).setOnClickListener { pair?.let { actions.share(listOf(it)) } }
+        findViewById<Button>(R.id.saveBtn).setOnClickListener { pair?.let { actions.saveToGallery(listOf(it)) } }
         findViewById<Button>(R.id.deleteBtn).setOnClickListener {
-            pair?.let { p -> pause(); actions.delete(p) { finish() } }
+            pair?.let { p -> pause(); actions.delete(listOf(p)) { finish() } }
         }
 
         seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
@@ -145,14 +146,21 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private fun refreshPair() {
-        // Re-read from MediaStore so the lock state is current after lock/unlock.
+        // Re-read so the lock state is current after lock/unlock. Look the recording up by its
+        // start time: locking a private clip moves its file, which changes its URI.
+        val key = intent.getStringExtra(EXTRA_KEY)
         Thread {
             val p = ClipRepo.load(this).firstOrNull { pp ->
-                pp.clips.any { it.uri == frontUri || it.uri == rearUri }
+                pp.key == key || pp.clips.any { it.uri == frontUri || it.uri == rearUri }
             }
             ui.post {
                 if (p == null && pair != null) { finish(); return@post }
                 pair = p
+                // Follow moved files so switching views reopens the right ones.
+                if (p != null) {
+                    if (frontUri != null) frontUri = (p.front ?: p.remote)?.uri ?: frontUri
+                    if (rearUri != null) rearUri = (p.rear ?: p.remote?.takeIf { p.front != null })?.uri ?: rearUri
+                }
                 lockBtn.text = if (p?.locked == true) "🔓 Unlock" else "🔒 Lock"
             }
         }.start()

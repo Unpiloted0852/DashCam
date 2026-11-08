@@ -1,6 +1,7 @@
 package com.example.dashcam
 
 import android.app.Activity
+import android.content.ClipData
 import android.content.Intent
 import android.net.Uri
 import android.os.Build
@@ -12,8 +13,9 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 
 /**
- * Lock / share / delete for a recording (both clips together). Clips this install didn't create
- * (e.g. after a reinstall) need the user's OK through Android's own consent dialog.
+ * Lock / share / save to gallery / delete for one or more recordings (all their clips together).
+ * Private clips are handled directly. Shared clips this install didn't create (e.g. after a
+ * reinstall) need the user's OK through Android's own consent dialog.
  * Must be constructed during the activity's onCreate.
  */
 class ClipActions(private val a: AppCompatActivity, private val onChanged: () -> Unit) {
@@ -25,56 +27,83 @@ class ClipActions(private val a: AppCompatActivity, private val onChanged: () ->
         onChanged()
     }
 
-    fun share(p: ClipPair) {
-        val uris = ArrayList<Uri>(p.clips.map { it.uri })
-        val send = if (uris.size == 1) {
-            Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, uris[0])
-        } else {
-            Intent(Intent.ACTION_SEND_MULTIPLE).putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
-        }
+    private fun clips(pairs: List<ClipPair>) = pairs.flatMap { it.clips }
+
+    /** Hand the clips to an app the user picks; it gets read access to exactly these files. */
+    fun share(pairs: List<ClipPair>) {
+        val list = clips(pairs).filter { !it.recording }
+        if (list.isEmpty()) { toast("Nothing to share"); return }
+        val uris = ArrayList<Uri>(list.map { Storage.shareUri(a, it.uri) })
+        val send = if (uris.size == 1) Intent(Intent.ACTION_SEND).putExtra(Intent.EXTRA_STREAM, uris[0])
+                   else Intent(Intent.ACTION_SEND_MULTIPLE).putParcelableArrayListExtra(Intent.EXTRA_STREAM, uris)
         send.type = "video/mp4"
+        // ClipData carries the read grant to the receiving app for every file.
+        send.clipData = ClipData.newRawUri("", uris[0]).apply { uris.drop(1).forEach { addItem(ClipData.Item(it)) } }
         send.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION)
-        a.startActivity(Intent.createChooser(send, "Share clip"))
+        a.startActivity(Intent.createChooser(send, if (uris.size == 1) "Share clip" else "Share ${uris.size} clips"))
     }
 
-    fun setLocked(p: ClipPair, locked: Boolean) {
-        val apply = { p.clips.forEach { runCatching { Storage.setLocked(a, it.uri, locked) } } }
+    fun setLocked(pairs: List<ClipPair>, locked: Boolean) {
+        val list = clips(pairs)
         Thread {
-            val result = try {
-                p.clips.forEach { Storage.setLocked(a, it.uri, locked) }; null
-            } catch (e: SecurityException) { e }
+            val refused = ArrayList<Uri>()
+            for (c in list) try { Storage.setLocked(a, c.uri, locked) } catch (e: SecurityException) { refused += c.uri }
             a.runOnUiThread {
-                if (result == null) {
+                if (refused.isEmpty()) {
                     toast(if (locked) "Locked — won't be loop-deleted" else "Unlocked")
                     onChanged()
                 } else if (Build.VERSION.SDK_INT >= 30) {
-                    pending = { Thread { apply(); a.runOnUiThread(onChanged) }.start() }
-                    consent.launch(IntentSenderRequest.Builder(
-                        MediaStore.createWriteRequest(a.contentResolver, p.clips.map { it.uri }).intentSender).build())
-                } else toast("This clip was made by an earlier install and can't be changed")
+                    pending = { Thread { refused.forEach { runCatching { Storage.setLocked(a, it, locked) } }; a.runOnUiThread(onChanged) }.start() }
+                    consent.launch(IntentSenderRequest.Builder(MediaStore.createWriteRequest(a.contentResolver, refused).intentSender).build())
+                } else { toast("Some clips were made by an earlier install and can't be changed"); onChanged() }
             }
         }.start()
     }
 
-    /** Deletes both clips after confirmation; [onDeleted] runs once they're gone. */
-    fun delete(p: ClipPair, onDeleted: () -> Unit = {}) {
-        if (p.recording) { toast("Still recording — stop recording first"); return }
-        if (Build.VERSION.SDK_INT >= 30) {
-            // The system dialog is the confirmation, and it performs the delete itself.
-            pending = onDeleted
-            consent.launch(IntentSenderRequest.Builder(
-                MediaStore.createDeleteRequest(a.contentResolver, p.clips.map { it.uri }).intentSender).build())
-        } else {
-            AlertDialog.Builder(a)
-                .setTitle("Delete this recording?")
-                .setMessage("${p.clips.size} file(s) will be permanently deleted.")
-                .setPositiveButton("Delete") { _, _ ->
-                    p.clips.forEach { runCatching { a.contentResolver.delete(it.uri, null, null) } }
-                    onDeleted(); onChanged()
+    /** Copy clips into the gallery (Movies/DashCam Exports), for keeping or using in other apps. */
+    fun saveToGallery(pairs: List<ClipPair>) {
+        val list = clips(pairs).filter { !it.recording }
+        if (list.isEmpty()) return
+        toast(if (list.size == 1) "Saving to gallery…" else "Saving ${list.size} clips to gallery…")
+        Thread {
+            val ok = list.count { Storage.exportToGallery(a, it.uri, it.name) }
+            a.runOnUiThread {
+                toast(if (ok == list.size) "Saved to gallery (Movies/DashCam Exports)"
+                      else "Saved $ok of ${list.size} clips — check free space")
+            }
+        }.start()
+    }
+
+    /** Delete after confirmation; [onDeleted] runs once they're gone. */
+    fun delete(pairs: List<ClipPair>, onDeleted: () -> Unit = {}) {
+        if (pairs.any { it.recording }) { toast("Still recording — stop recording first"); return }
+        val list = clips(pairs)
+        if (list.isEmpty()) return
+        val (priv, shared) = list.partition { it.isPrivate }
+        val locked = pairs.count { it.locked }
+        val size = ClipsActivity.fmtSize(list.sumOf { it.sizeBytes })
+        val what = if (pairs.size == 1) "this recording" else "${pairs.size} recordings"
+        val doDelete = {
+            Thread {
+                priv.forEach { Storage.delete(a, it.uri) }
+                val leftShared = shared.filter { !Storage.delete(a, it.uri) }.map { it.uri }
+                a.runOnUiThread {
+                    if (leftShared.isNotEmpty() && Build.VERSION.SDK_INT >= 30) {
+                        // Shared clips from an earlier install: Android asks the user itself.
+                        pending = onDeleted
+                        consent.launch(IntentSenderRequest.Builder(
+                            MediaStore.createDeleteRequest(a.contentResolver, leftShared).intentSender).build())
+                    } else { onDeleted(); onChanged() }
                 }
-                .setNegativeButton("Cancel", null)
-                .show()
+            }.start()
         }
+        AlertDialog.Builder(a)
+            .setTitle("Delete $what?")
+            .setMessage("${list.size} file(s), $size, will be permanently deleted." +
+                if (locked > 0) "\n\n$locked of them ${if (locked == 1) "is" else "are"} locked." else "")
+            .setPositiveButton("Delete") { _, _ -> doDelete() }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun toast(t: String) = Toast.makeText(a, t, Toast.LENGTH_SHORT).show()

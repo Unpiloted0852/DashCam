@@ -32,4 +32,6 @@
     <string-array name="weather_defaults"><item>station</item><item>temp</item><item>rh</item><item>wind</item><item>clouds</item></string-array>
     <string-array name="zone_labels"><item>Abbreviation (e.g. CET)</item><item>Offset (e.g. UTC+1)</item><item>Both (e.g. CET (UTC+1))</item><item>Don\'t show</item></string-array>
     <string-array name="zone_values"><item>abbr</item><item>offset</item><item>both</item><item>none</item></string-array>
+    <string-array name="clip_storage_labels"><item>Private to DashCam — share only on purpose (recommended)</item><item>Visible to other apps (Movies/DashCam)</item></string-array>
+    <string-array name="clip_storage_values"><item>private</item><item>shared</item></string-array>
 </resources>

@@ -25,6 +25,7 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
 
     <application
+        android:hasFragileUserData="true"
         android:allowBackup="false"
         android:icon="@mipmap/ic_launcher"
         android:roundIcon="@mipmap/ic_launcher_round"
@@ -64,6 +65,13 @@
         <receiver
             android:name=".Updater$InstallReceiver"
             android:exported="false" />
+
+        <!-- Serves a private clip to another app only when the user shares it. -->
+        <provider
+            android:name=".ClipProvider"
+            android:authorities="${applicationId}.clips"
+            android:exported="false"
+            android:grantUriPermissions="true" />
 
         <service
             android:name=".DashCamService"

@@ -41,11 +41,17 @@ Android dashcam that records the road (main/rear-facing camera) and the cabin/re
   detector), when the car charger is unplugged while stopped, or (optional) when the car's Bluetooth
   disconnects — each with a short grace period that driving again cancels — with a "parked for N
   minutes" timer as a backup. The reason is logged and shown in the notification.
-- **Clips screen** (🎞): every recording with front/rear thumbnails, length, size and lock state;
-  "Locked only" filter; tap to play, long-press to lock/unlock, share or delete. The player shows
-  Front, Rear or Both side by side (stacked in portrait), kept in sync with one seek bar.
+- **Clips screen** (🎞): recordings grouped by day with front/rear thumbnails, length, size and lock
+  state; "Locked only" filter. Tap to play. Long-press (or Select) to pick recordings — or a whole
+  day, or Select all — then Lock, Unlock, Share, Save to gallery or Delete them together. The player
+  shows Front, Rear or Both side by side (stacked in portrait), kept in sync with one seek bar.
 - **Audio** is recorded into both the front and rear clips, so either file stands on its own.
-- **Storage:** internal or SD card (`Movies/DashCam` on the chosen volume); falls back to internal storage if the card is missing.
+- **Private storage:** by default clips are kept in DashCam's own app storage (internal or SD card),
+  where the gallery and other apps can't see them; sharing is always deliberate — Share hands just
+  the chosen clips to the app you pick, and Save to gallery copies them to Movies/DashCam Exports.
+  A setting switches to the shared Movies/DashCam folder instead, and older clips there can be moved
+  in. Note: Android deletes app storage when the app is uninstalled; DashCam asks Android to offer
+  "keep app data" at uninstall, and important clips can be saved to the gallery first.
 
 - **Remote camera (second phone)** — *experimental, `remote-camera` branch*: an old phone (no SIM,
   internet or Google Play Services needed, LineageOS is fine) stuck to the rear window records as a

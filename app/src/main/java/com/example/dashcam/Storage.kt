@@ -19,8 +19,11 @@ import java.util.concurrent.TimeUnit
 import androidx.preference.PreferenceManager
 
 /**
- * Clips live in the shared Movies/DashCam folder (visible in Gallery / Files).
- * Locked clips are moved to Movies/DashCam/Locked and are never loop-deleted.
+ * Where clips live. By default in DashCam's private app storage (Android/data/<app>/files/Movies on
+ * each volume): other apps and the gallery can't see them, so sharing is always deliberate (Share or
+ * Save to gallery). Optionally in the shared Movies/DashCam folder, visible to other apps.
+ * Locked clips sit in a Locked/ subfolder and are never loop-deleted.
+ * Private clips are identified by file:// URIs, shared ones by MediaStore content:// URIs.
  */
 object Storage {
     private const val TAG = "Storage"
@@ -28,8 +31,40 @@ object Storage {
     const val LOCKED_DIR = "Movies/DashCam/Locked/"
     private const val MIN_FREE_BYTES = 1L * 1024 * 1024 * 1024
 
-    /** Clips currently being written. Guarded by [lock] together with create/delete. */
-    private val openIds = HashSet<Long>()
+    /** Clips currently being written (by URI). Guarded by [lock] together with create/delete. */
+    private val openIds = HashSet<String>()
+
+    const val EXPORT_DIR = "Movies/DashCam Exports/"
+    const val PREF_PRIVATE = "clip_storage"
+
+    /** New clips go to private storage unless the user chose the shared folder. */
+    fun privateMode(ctx: Context): Boolean =
+        PreferenceManager.getDefaultSharedPreferences(ctx).getString(PREF_PRIVATE, "private") != "shared"
+
+    fun isPrivate(uri: Uri) = uri.scheme == "file"
+    fun fileOf(uri: Uri): File? = if (isPrivate(uri)) uri.path?.let { File(it) } else null
+
+    /** DashCam's private clip folder on each mounted volume, keyed by MediaStore volume name. */
+    fun privateDirs(ctx: Context): Map<String, File> {
+        val sm = ctx.getSystemService(StorageManager::class.java)
+        val out = LinkedHashMap<String, File>()
+        for (dir in ctx.getExternalFilesDirs(Environment.DIRECTORY_MOVIES)) {
+            if (dir == null) continue
+            val sv = try { sm.getStorageVolume(dir) } catch (_: Exception) { null }
+            val name = when {
+                sv == null -> continue
+                Build.VERSION.SDK_INT >= 30 -> sv.mediaStoreVolumeName ?: continue
+                sv.isPrimary -> MediaStore.VOLUME_EXTERNAL_PRIMARY
+                else -> sv.uuid?.lowercase() ?: continue
+            }
+            out[name] = dir
+        }
+        return out
+    }
+
+    private fun privateDir(ctx: Context, volume: String): File =
+        privateDirs(ctx)[volume] ?: privateDirs(ctx)[MediaStore.VOLUME_EXTERNAL_PRIMARY]
+        ?: ctx.getExternalFilesDir(Environment.DIRECTORY_MOVIES) ?: File(ctx.filesDir, "Movies")
     private val lock = Any()
 
     private fun collection(volume: String): Uri = MediaStore.Video.Media.getContentUri(volume)
@@ -62,23 +97,52 @@ object Storage {
     }
 
     fun create(ctx: Context, volume: String, displayName: String): Pair<Uri, ParcelFileDescriptor> {
+        if (privateMode(ctx)) {
+            val dir = privateDir(ctx, volume).apply { mkdirs() }
+            var f = File(dir, displayName)
+            var n = 1
+            while (f.exists() || File(dir, "Locked/${f.name}").exists()) f = File(dir, displayName.removeSuffix(".mp4") + " (${n++}).mp4")
+            val uri = Uri.fromFile(f)
+            synchronized(lock) { openIds += uri.toString() }
+            val pfd = ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_WRITE or
+                ParcelFileDescriptor.MODE_CREATE or ParcelFileDescriptor.MODE_TRUNCATE)
+            return uri to pfd
+        }
         val values = ContentValues().apply {
             put(MediaStore.Video.Media.DISPLAY_NAME, displayName)
             put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
             put(MediaStore.Video.Media.RELATIVE_PATH, DIR)
         }
         val uri = synchronized(lock) {
-            ctx.contentResolver.insert(collection(volume), values)?.also { openIds += ContentUris.parseId(it) }
+            ctx.contentResolver.insert(collection(volume), values)?.also { openIds += it.toString() }
         } ?: throw IllegalStateException("MediaStore insert failed")
         val pfd = ctx.contentResolver.openFileDescriptor(uri, "rw")
             ?: throw IllegalStateException("open failed")
         return uri to pfd
     }
 
-    fun isOpen(uri: Uri): Boolean = synchronized(lock) { ContentUris.parseId(uri) in openIds }
+    fun isOpen(uri: Uri): Boolean = synchronized(lock) { uri.toString() in openIds }
+
+    /** Move a private file between the clip folder and its Locked/ subfolder; returns its new URI. */
+    private fun movePrivate(f: File, locked: Boolean): Uri {
+        val inLocked = f.parentFile?.name == "Locked"
+        if (inLocked == locked) return Uri.fromFile(f)
+        val base = if (inLocked) f.parentFile!!.parentFile!! else f.parentFile!!
+        val dest = File(if (locked) File(base, "Locked").apply { mkdirs() } else base, f.name)
+        return if (f.renameTo(dest)) Uri.fromFile(dest) else Uri.fromFile(f)
+    }
+
+    /** Permanently delete a clip this app can delete directly (private, or shared and ours). */
+    fun delete(ctx: Context, uri: Uri): Boolean {
+        val name = fileOf(uri)?.name
+        val ok = fileOf(uri)?.delete() ?: (try { ctx.contentResolver.delete(uri, null, null) > 0 } catch (_: SecurityException) { false })
+        if (ok && name != null) { forgetStart(ctx, name); rememberLocked(ctx, name, false) }
+        return ok
+    }
 
     /** Move a clip between Movies/DashCam and Movies/DashCam/Locked. Throws SecurityException if not ours. */
     fun setLocked(ctx: Context, uri: Uri, locked: Boolean) {
+        fileOf(uri)?.let { f -> rememberLocked(ctx, f.name, locked); movePrivate(f, locked); return }
         val name = displayName(ctx, uri)
         name?.let { rememberLocked(ctx, it, locked) }
         val oldPath = dataPath(ctx, uri)
@@ -110,7 +174,7 @@ object Storage {
     }
 
     /** Mark a clip finished so loop recording may delete it later. */
-    fun markClosed(uri: Uri) = synchronized(lock) { openIds -= ContentUris.parseId(uri) }
+    fun markClosed(uri: Uri) = synchronized(lock) { openIds -= uri.toString() }
 
     /**
      * Protect a just-finished clip. The name is remembered first (loop deletion never removes a
@@ -118,6 +182,7 @@ object Storage {
      * that runs when the file is closed, so it is checked and retried.
      */
     fun lock(ctx: Context, uri: Uri) {
+        fileOf(uri)?.let { f -> rememberLocked(ctx, f.name, true); if (f.exists()) movePrivate(f, true); return }
         val name = displayName(ctx, uri)
         if (name != null) rememberLocked(ctx, name, true)
         // Closing the file starts a media scan; let it finish first or it can undo the move.
@@ -212,6 +277,13 @@ object Storage {
         data class Clip(val uri: Uri, val size: Long, val locked: Boolean, val name: String)
         val protectedNames = lockedNames(ctx)
         val clips = ArrayList<Clip>()
+        // Private clips on this volume (plus any older shared ones below), oldest first by name.
+        privateDirs(ctx)[volume]?.let { dir ->
+            for (f in dir.listFiles().orEmpty()) if (f.isFile && f.name.endsWith(".mp4"))
+                clips += Clip(Uri.fromFile(f), f.length(), f.name in protectedNames, f.name)
+            for (f in File(dir, "Locked").listFiles().orEmpty()) if (f.isFile && f.name.endsWith(".mp4"))
+                clips += Clip(Uri.fromFile(f), f.length(), true, f.name)
+        }
         try {
             ctx.contentResolver.query(
                 collection,
@@ -227,14 +299,15 @@ object Storage {
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "query failed", e); return
+            Log.e(TAG, "query failed", e)
         }
+        clips.sortBy { it.name }   // names start with the recording time
         var total = clips.sumOf { it.size }
         for (clip in clips) {
             if (total <= limitBytes && freeBytes(ctx, volume) >= MIN_FREE_BYTES) break
-            if (clip.locked || ContentUris.parseId(clip.uri) in openIds) continue
+            if (clip.locked || clip.uri.toString() in openIds) continue
             try {
-                if (ctx.contentResolver.delete(clip.uri, null, null) > 0) {
+                if (delete(ctx, clip.uri)) {
                     total -= clip.size
                     forgetStart(ctx, clip.name)
                     Log.i(TAG, "loop-deleted ${clip.uri}")
@@ -251,4 +324,86 @@ object Storage {
                   else null
         if (dir != null) StatFs(dir.path).availableBytes else Long.MAX_VALUE
     } catch (e: Exception) { Long.MAX_VALUE }
+
+    // ---------------------------------------------------------------- sharing / gallery / moving
+
+    private fun input(ctx: Context, uri: Uri) = fileOf(uri)?.inputStream() ?: ctx.contentResolver.openInputStream(uri)
+
+    /** A URI another app can be given for this clip (read-only, only when the user shares it). */
+    fun shareUri(ctx: Context, uri: Uri): Uri = fileOf(uri)?.let { ClipProvider.uriFor(ctx, it) } ?: uri
+
+    /** Copy a clip into the gallery (Movies/DashCam Exports on internal storage). */
+    fun exportToGallery(ctx: Context, uri: Uri, name: String): Boolean {
+        val values = ContentValues().apply {
+            put(MediaStore.Video.Media.DISPLAY_NAME, name)
+            put(MediaStore.Video.Media.MIME_TYPE, "video/mp4")
+            put(MediaStore.Video.Media.RELATIVE_PATH, EXPORT_DIR)
+            put(MediaStore.Video.Media.IS_PENDING, 1)
+        }
+        val out = ctx.contentResolver.insert(collection(MediaStore.VOLUME_EXTERNAL_PRIMARY), values) ?: return false
+        return try {
+            ctx.contentResolver.openOutputStream(out)!!.use { o -> input(ctx, uri)!!.use { it.copyTo(o, 256 * 1024) } }
+            ctx.contentResolver.update(out, ContentValues().apply { put(MediaStore.Video.Media.IS_PENDING, 0) }, null, null)
+            EventLog.log("Clip", "saved to gallery: $name")
+            true
+        } catch (e: Exception) {
+            Log.e(TAG, "export $name", e)
+            runCatching { ctx.contentResolver.delete(out, null, null) }
+            false
+        }
+    }
+
+    data class SharedClip(val uri: Uri, val name: String, val size: Long, val locked: Boolean, val volume: String)
+
+    /** Clips still in the shared Movies/DashCam folder (from before private storage, or shared mode). */
+    fun sharedClips(ctx: Context): List<SharedClip> {
+        val out = ArrayList<SharedClip>()
+        val protectedNames = lockedNames(ctx)
+        for (vol in MediaStore.getExternalVolumeNames(ctx)) {
+            val coll = collection(vol)
+            try {
+                ctx.contentResolver.query(coll,
+                    arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.DISPLAY_NAME,
+                        MediaStore.Video.Media.SIZE, MediaStore.Video.Media.RELATIVE_PATH),
+                    "${MediaStore.Video.Media.RELATIVE_PATH} LIKE ?", arrayOf("$DIR%"), null)?.use { c ->
+                    while (c.moveToNext()) {
+                        val name = c.getString(1) ?: continue
+                        if (!name.endsWith(".mp4")) continue
+                        out += SharedClip(ContentUris.withAppendedId(coll, c.getLong(0)), name, c.getLong(2),
+                            c.getString(3) == LOCKED_DIR || name in protectedNames, vol)
+                    }
+                }
+            } catch (e: Exception) { Log.e(TAG, "shared query $vol", e) }
+        }
+        return out
+    }
+
+    /**
+     * Move shared clips into private storage: copy, then delete the original. A clip made by an
+     * earlier install can't be deleted by this app, so its copy is removed again and it's skipped.
+     * Returns (moved, skipped).
+     */
+    fun moveSharedToPrivate(ctx: Context, progress: (done: Int, total: Int) -> Unit): Pair<Int, Int> {
+        val clips = sharedClips(ctx).filter { !isOpen(it.uri) }
+        var moved = 0; var skipped = 0
+        clips.forEachIndexed { i, c ->
+            progress(i, clips.size)
+            val dir = privateDir(ctx, c.volume).let { if (c.locked) File(it, "Locked") else it }.apply { mkdirs() }
+            val dest = File(dir, c.name)
+            val tmp = File(dir, c.name + ".part")
+            try {
+                input(ctx, c.uri)!!.use { inp -> tmp.outputStream().use { inp.copyTo(it, 256 * 1024) } }
+                if (tmp.length() != c.size && c.size > 0) throw IllegalStateException("size mismatch")
+                if (!tmp.renameTo(dest)) throw IllegalStateException("rename failed")
+                val gone = try { ctx.contentResolver.delete(c.uri, null, null) > 0 } catch (_: SecurityException) { false }
+                if (gone) { moved++; if (c.locked) rememberLocked(ctx, c.name, true) }
+                else { dest.delete(); skipped++ }
+            } catch (e: Exception) {
+                Log.e(TAG, "move ${c.name}", e); tmp.delete(); skipped++
+            }
+        }
+        progress(clips.size, clips.size)
+        EventLog.log("Clip", "moved $moved clips into private storage, skipped $skipped")
+        return moved to skipped
+    }
 }
