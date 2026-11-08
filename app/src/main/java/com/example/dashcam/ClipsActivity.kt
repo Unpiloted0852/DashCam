@@ -328,9 +328,9 @@ class ClipsActivity : AppCompatActivity() {
     private fun play(p: ClipPair) {
         startActivity(Intent(this, PlayerActivity::class.java)
             .putExtra(PlayerActivity.EXTRA_KEY, p.key)
-            // Two views for now: a remote camera clip fills whichever slot is free.
-            .putExtra(PlayerActivity.EXTRA_FRONT, (p.front ?: p.remote)?.uri?.toString())
-            .putExtra(PlayerActivity.EXTRA_REAR, (p.rear ?: p.remote?.takeIf { p.front != null })?.uri?.toString()))
+            .putExtra(PlayerActivity.EXTRA_FRONT, p.front?.uri?.toString())
+            .putExtra(PlayerActivity.EXTRA_REAR, p.rear?.uri?.toString())
+            .putExtra(PlayerActivity.EXTRA_REMOTE, p.remote?.uri?.toString()))
     }
 
     // ------------------------------------------------------------------ moving old clips in

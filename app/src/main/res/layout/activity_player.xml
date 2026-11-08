@@ -54,6 +54,22 @@
 
             <TextView style="@style/Pill" android:layout_margin="8dp" android:text="REAR" android:textSize="12sp" />
         </FrameLayout>
+
+        <FrameLayout
+            android:id="@+id/remoteBox"
+            android:layout_width="0dp"
+            android:layout_height="match_parent"
+            android:layout_weight="1"
+            android:visibility="gone">
+
+            <VideoView
+                android:id="@+id/remoteVideo"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_gravity="center" />
+
+            <TextView style="@style/Pill" android:layout_margin="8dp" android:text="REMOTE" android:textSize="12sp" />
+        </FrameLayout>
     </LinearLayout>
 
     <LinearLayout
@@ -104,6 +120,7 @@
             <androidx.appcompat.widget.AppCompatButton android:id="@+id/modeFront" style="@style/CtlButton" android:layout_marginStart="0dp" android:text="Front" />
             <androidx.appcompat.widget.AppCompatButton android:id="@+id/modeBoth" style="@style/CtlButton" android:text="Both" />
             <androidx.appcompat.widget.AppCompatButton android:id="@+id/modeRear" style="@style/CtlButton" android:text="Rear" />
+            <androidx.appcompat.widget.AppCompatButton android:id="@+id/modeRemote" style="@style/CtlButton" android:text="Remote" />
             <androidx.appcompat.widget.AppCompatButton android:id="@+id/lockBtn" style="@style/CtlButton" android:layout_marginStart="20dp" android:text="🔒 Lock" />
             <androidx.appcompat.widget.AppCompatButton android:id="@+id/shareBtn" style="@style/CtlButton" android:text="Share" />
             <androidx.appcompat.widget.AppCompatButton android:id="@+id/saveBtn" style="@style/CtlButton" android:text="Save to gallery" />

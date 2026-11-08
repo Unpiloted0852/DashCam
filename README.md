@@ -53,7 +53,7 @@ Android dashcam that records the road (main/rear-facing camera) and the cabin/re
   in. Note: Android deletes app storage when the app is uninstalled; DashCam asks Android to offer
   "keep app data" at uninstall, and important clips can be saved to the gallery first.
 
-- **Remote camera (second phone)** — *experimental, `remote-camera` branch*: an old phone (no SIM,
+- **Remote camera (second phone)**: an old phone (no SIM,
   internet or Google Play Services needed, LineageOS is fine) stuck to the rear window records as a
   remote camera controlled by the main phone over Bluetooth.
   - Setup: pair the phones once in Android's Bluetooth settings; in DashCam Settings → *Remote camera*
@@ -75,6 +75,15 @@ Android dashcam that records the road (main/rear-facing camera) and the cabin/re
     switching it on. It can then sit with the screen off: it turns its cameras and GPS off and waits
     for the main phone. "Turn off" in its notification stops it.
   - Both phones must run the same link protocol; otherwise both show "Versions don't match".
+  - **Live view:** 📺 on the main phone shows the remote camera full screen (720p, mirrored like a
+    rear-view mirror by default; ⇋ Mirror toggles). It runs over Wi‑Fi Direct: while the phones are
+    linked the remote keeps a private group up and the main phone stays joined, so the picture appears
+    in about 1.5 s, even with the remote's screen off. Wi‑Fi must be on on both phones (no network
+    needed); both ask once for "Nearby devices". The very first join takes ~20 s.
+  - **Remote clips:** the Clips screen shows a third thumbnail for the remote's clip and lists clips
+    that are only on the remote. Tap one (or Select → ⋮ → Download from remote) to copy it in full
+    quality to the main phone (resumable; ~2.5 MB/s on a 2.4 GHz Wi‑Fi Direct link). The player
+    shows Front / Rear / Remote / All in sync.
 
 - **Updates:** checks this repo's GitHub Releases when the app opens (at most every 6 h, never while
   recording) and offers to download and install the new APK. Also "Check for updates now" in Settings.
