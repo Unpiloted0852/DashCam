@@ -248,7 +248,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
             if (p === cabinCam) cabinOpenFailures = 0
             if (warning?.contains("will resume automatically") == true &&
                 listOfNotNull(mainCam, cabinCam).all { it.cameraOpen }) warning = null
-            if (p === mainCam) { startCabin(); liveServer?.let { srv -> worker.execute { p.startLive(srv) } } }
+            if (p === mainCam) { startCabin(); liveServer?.takeIf { liveVideo }?.let { srv -> worker.execute { p.startLive(srv) } } }
             if (p === cabinCam && warning?.startsWith("This phone doesn't list") == true) warning = null
             changed()
         }
@@ -561,10 +561,15 @@ class DashCamService : Service(), CameraPipeline.Listener,
         tickCount++
         if (settings.isPrimary) {
             l.send("tel", Telemetry.relayJson())
+            if (tickCount % 20 == 0L) ui.post {
+                val a = liveAnswer
+                if (a != null && a.optBoolean("ok") && liveAddr == null && !liveJoining) joinLive(a)
+            }
             if (tickCount % 5 == 0L) sendState()
         } else {
             if (tickCount % 3 == 0L) sendStatus()
-            if (liveServer != null && now0() - liveAskedAt > LIVE_KEEPALIVE_MS) ui.post { stopLive("main phone stopped asking") }
+            if (liveVideo && now0() - liveAskedAt > LIVE_KEEPALIVE_MS) ui.post { stopLiveVideo("main phone stopped asking") }
+            if (liveCreds == null && tickCount % 10 == 0L) ui.post { ensureLiveGroup() }
             val now = SystemClock.elapsedRealtime()
             if (lastTimeSync == 0L || now - lastTimeSync > TIME_SYNC_EVERY_MS) { lastTimeSync = now; syncTimeFromPeer() }
         }
@@ -581,11 +586,12 @@ class DashCamService : Service(), CameraPipeline.Listener,
                 } else {
                     lastTimeSync = 0L   // sync the clock right away
                     sendStatus()
+                    liveCreds = null; ui.post { closeLiveGroup("new connection"); ensureLiveGroup() }
                 }
             }
             if (state.phase != RemoteLink.Phase.CONNECTED) {
                 peerStatus = null
-                if (settings.isRemote) ui.post { stopLive("Bluetooth link lost") }
+                ui.post { stopLive("Bluetooth link lost") }
             }
             if (was == RemoteLink.Phase.CONNECTED && state.phase != RemoteLink.Phase.CONNECTED && settings.isRemote && recording) {
                 EventLog.log("Link", "main phone gone — still recording; own end-of-drive detection takes over")
@@ -599,7 +605,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
                     .put("unc", TrueTime.uncertaintyMs).put("src", TrueTime.source))
                 "status" -> { peerStatus = m; peerStatusAt = SystemClock.elapsedRealtime(); ui.post { changed() } }
                 "lock" -> ui.post { lockClip(fromPeer = true) }
-                "live" -> ui.post { liveAnswer = m; liveListener?.invoke(m) }
+                "live" -> ui.post { onLiveAnswer(m) }
                 "req" -> ui.post {
                     when (m.optString("do")) {
                         "start" -> { startRecording(); if (!recording) sendState() }
@@ -615,7 +621,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
                 }
                 "state" -> ui.post { applyPeerState(m) }
                 "lock" -> ui.post { lockClip(fromPeer = true) }
-                "live" -> ui.post { if (m.optBoolean("on")) liveRequested() else stopLive("main phone closed the view") }
+                "live" -> ui.post { if (m.optBoolean("on")) liveRequested() else stopLiveVideo("main phone closed the view") }
             }
         }
     }
@@ -733,45 +739,91 @@ class DashCamService : Service(), CameraPipeline.Listener,
                 }
             } else {
                 val t = if (TrueTime.linkFresh()) " · time ±${TrueTime.uncertaintyMs} ms" else " · syncing time…"
-                "$who: connected to $name$t" + if (liveServer?.hasClient == true) " · showing live view" else ""
+                "$who: connected to $name$t" + if (liveVideo) " · showing live view" else ""
             }
         }
     }
 
     // ------------------------------------------------------------------ live view (Wi‑Fi Direct)
+    //
+    // While the phones are linked the remote keeps a Wi‑Fi Direct group up and the main phone stays
+    // joined to it, so opening the live view only has to start the camera feed (about a second).
 
     private var liveServer: LiveServer? = null
     private var liveWifi: WifiDirect? = null
     private var liveCreds: JSONObject? = null
+    /** Remote: the main phone is watching, so the live encoder (and camera) run. */
+    private var liveVideo = false
     @Volatile private var liveAskedAt = 0L
+    private var liveGroupRetryAt = 0L
     private fun now0() = SystemClock.elapsedRealtime()
 
-    /** Main phone: the remote's last answer to a live-view request. */
+    /** Main phone: the remote's group credentials (or error), and where it is once joined. */
     var liveAnswer: JSONObject? = null; private set
-    var liveListener: ((JSONObject) -> Unit)? = null
+    @Volatile var liveAddr: java.net.InetAddress? = null; private set
+    var liveJoinStatus: String = ""; private set
+    private var liveJoining = false
+    private var liveJoinedFor: JSONObject? = null
+    var liveListener: (() -> Unit)? = null
 
-    /** Main phone: ask the remote for (or keep alive, or end) its live view. */
+    /** Main phone: ask the remote to start (or keep running, or stop) its live feed. */
     fun requestLive(on: Boolean) {
-        if (!on) liveAnswer = null
         link?.send("live", JSONObject().put("on", on))
     }
 
     val linkConnected: Boolean get() = link?.connected == true
 
-    /** Remote camera: the main phone wants to watch (sent again every few seconds while it does). */
-    private fun liveRequested() {
-        liveAskedAt = now0()
+    private fun notifyLive() = ui.post { liveListener?.invoke() }
+
+    /** Main phone: got the remote's group details: join it in the background (once per group). */
+    private fun onLiveAnswer(m: JSONObject) {
+        liveAnswer = m
+        if (!m.optBoolean("ok")) { notifyLive(); return }
+        val same = liveJoinedFor?.let { it.optString("ssid") == m.optString("ssid") && it.optString("pass") == m.optString("pass") } == true
+        if (same && (liveAddr != null || liveJoining)) { notifyLive(); return }
+        joinLive(m)
+    }
+
+    private fun joinLive(m: JSONObject) {
+        LiveLink.problem(this)?.let { liveJoinStatus = it; notifyLive(); return }
+        liveWifi?.close()
+        liveAddr = null; liveJoining = true; liveJoinedFor = m
+        liveJoinStatus = "Joining the remote's Wi‑Fi…"
+        notifyLive()
+        val t0 = now0()
+        val w = WifiDirect(this).also { liveWifi = it }
+        w.join(m.getString("ssid"), m.getString("pass"), { addr ->
+            if (liveWifi !== w) return@join
+            liveJoining = false; liveAddr = addr; liveJoinStatus = ""
+            EventLog.log("Live", "joined the remote's Wi‑Fi Direct group in ${now0() - t0} ms ($addr)")
+            notifyLive()
+        }) { err ->
+            if (liveWifi !== w) return@join
+            liveJoining = false; liveJoinStatus = "⚠ $err — retrying"
+            EventLog.log("Live", "join: $err")
+            w.close(); liveWifi = null; liveJoinedFor = null
+            notifyLive()
+        }
+    }
+
+    /** Main phone: the remote's group went away (link lost, app closed). */
+    private fun leaveLive() {
+        liveWifi?.close(); liveWifi = null
+        liveAddr = null; liveJoining = false; liveJoinedFor = null; liveAnswer = null
+        notifyLive()
+    }
+
+    /** Remote: make sure the group and video port are up; tells the main phone how to join. */
+    private fun ensureLiveGroup() {
         liveCreds?.let { link?.send("live", JSONObject(it.toString())); return }
         if (liveServer != null) return   // group still forming
+        if (now0() < liveGroupRetryAt) return
         LiveLink.problem(this)?.let { link?.send("live", JSONObject().put("ok", false).put("err", it)); return }
         val token = LiveLink.randomString(16)
         val srv = try { LiveServer(token) { mainCam?.requestLiveKeyFrame() } } catch (e: Exception) {
             link?.send("live", JSONObject().put("ok", false).put("err", "can't open the video port: ${e.message}")); return
         }
         liveServer = srv
-        EventLog.log("Live", "main phone wants live view: starting Wi‑Fi Direct")
-        exitIdle()
-        mainCam?.let { c -> worker.execute { c.startLive(srv) } }
         val ssid = "DIRECT-dc-DashCam-" + LiveLink.randomString(4)
         val pass = LiveLink.randomString(16)
         val w = WifiDirect(this).also { liveWifi = it }
@@ -784,24 +836,49 @@ class DashCamService : Service(), CameraPipeline.Listener,
             if (liveServer !== srv) return@createGroup
             EventLog.log("Live", "Wi‑Fi Direct: $err")
             link?.send("live", JSONObject().put("ok", false).put("err", "Wi‑Fi Direct: $err"))
-            stopLive(err)
+            closeLiveGroup(err)
+            liveGroupRetryAt = now0() + 30_000
         }
+    }
+
+    /** Remote: the main phone wants to watch (sent again every few seconds while it does). */
+    private fun liveRequested() {
+        liveAskedAt = now0()
+        ensureLiveGroup()
+        if (liveVideo) return
+        val srv = liveServer ?: return
+        liveVideo = true
+        EventLog.log("Live", "main phone is watching: starting the live feed")
+        exitIdle()
+        mainCam?.let { c -> worker.execute { c.startLive(srv) } }
         changed()
     }
 
-    private fun stopLive(why: String) {
-        val srv = liveServer ?: return
-        EventLog.log("Live", "live view off ($why)")
-        liveServer = null; liveCreds = null
-        srv.stop()
-        liveWifi?.close(); liveWifi = null
+    /** Remote: nobody is watching any more; the group stays up for next time. */
+    private fun stopLiveVideo(why: String) {
+        if (!liveVideo) return
+        liveVideo = false
+        EventLog.log("Live", "live feed off ($why)")
         mainCam?.let { c -> worker.execute { c.stopLive() } }
         if (!bound && !recording && !stopping && settings.isRemote) enterIdle()
         changed()
     }
 
+    private fun closeLiveGroup(why: String) {
+        stopLiveVideo(why)
+        val srv = liveServer ?: return
+        EventLog.log("Live", "Wi‑Fi Direct group closed ($why)")
+        liveServer = null; liveCreds = null
+        srv.stop()
+        liveWifi?.close(); liveWifi = null
+    }
+
+    private fun stopLive(why: String) {
+        if (settings.isRemote) closeLiveGroup(why) else leaveLive()
+    }
+
     private fun enterIdle() {
-        if (idle || recording || stopping || liveServer != null) return
+        if (idle || recording || stopping || liveVideo) return
         idle = true
         EventLog.log("Link", "remote camera idle: cameras and GPS off, waiting for the main phone")
         stopCameras()

@@ -237,58 +237,47 @@ class LiveServer(val token: String, private val onKeyFrameWanted: () -> Unit) : 
 }
 
 /**
- * Main phone: joins the remote's Wi‑Fi Direct group, receives the feed and decodes it onto a Surface.
- * [onStatus] gets short human-readable states on the main thread ("" once video is showing).
+ * Main phone: receives the feed from the remote (already joined to its Wi‑Fi Direct group) and
+ * decodes it onto a Surface. [onStatus] gets short states on the main thread ("" once video shows).
  */
 class LiveViewer(
-    ctx: Context,
     private val surface: Surface,
     private val onStatus: (String) -> Unit,
     private val onSize: (Int, Int) -> Unit,
 ) {
     private val ui = Handler(Looper.getMainLooper())
-    private val wifi = WifiDirect(ctx)
     @Volatile private var running = true
     @Volatile private var socket: Socket? = null
-    private var creds: Triple<String, String, String>? = null   // ssid, pass, token
+    @Volatile private var target: Pair<InetAddress, String>? = null
     private var thread: Thread? = null
 
     private fun status(s: String) = ui.post { if (running) onStatus(s) }
 
-    /** Credentials from the remote (sent again every few seconds); (re)joins when they change. */
-    fun offer(ssid: String, pass: String, token: String) {
-        val c = Triple(ssid, pass, token)
-        if (c == creds) return
-        creds = c
+    /** Stream from [addr]; a no-op if already doing so. */
+    fun connect(addr: InetAddress, token: String) {
+        val t = addr to token
+        if (t == target && thread?.isAlive == true) return
+        target = t
         socket?.let { try { it.close() } catch (_: Exception) {} }
-        status("Joining the remote's Wi‑Fi…")
-        wifi.join(ssid, pass, { addr -> if (creds == c) startStream(addr, token, c) }) { err ->
-            if (creds == c) { creds = null; status("⚠ $err — retrying") }
-        }
-    }
-
-    private fun startStream(addr: InetAddress, token: String, c: Triple<String, String, String>) {
         thread?.interrupt()
         thread = Thread({
-            var tries = 0
-            while (running && creds == c) {
+            while (running && target == t) {
                 status("Connecting to the remote camera…")
                 try {
                     val s = Socket()
                     socket = s
                     s.tcpNoDelay = true
-                    s.connect(InetSocketAddress(addr, LiveLink.PORT), 4000)
+                    s.receiveBufferSize = 512 * 1024
+                    s.connect(InetSocketAddress(addr, LiveLink.PORT), 3000)
                     s.getOutputStream().apply { write("$token\n".toByteArray()); flush() }
-                    tries = 0
+                    status("Starting the remote camera…")
                     decode(DataInputStream(BufferedInputStream(s.getInputStream(), 256 * 1024)))
                 } catch (e: Exception) {
                     if (running) EventLog.log("Live", "stream: ${e.message}")
                 }
                 socket?.let { try { it.close() } catch (_: Exception) {} }
-                if (!running || creds != c) break
-                status("Reconnecting…")
-                if (++tries >= 5) { ui.post { if (creds == c) creds = null }; break }   // rejoin on the next offer
-                try { Thread.sleep(1000) } catch (_: InterruptedException) { break }
+                if (!running || target != t) break
+                try { Thread.sleep(700) } catch (_: InterruptedException) { break }
             }
         }, "live-view").apply { isDaemon = true; start() }
     }
@@ -346,9 +335,8 @@ class LiveViewer(
 
     fun close() {
         running = false
-        creds = null
+        target = null
         socket?.let { try { it.close() } catch (_: Exception) {} }
         thread?.interrupt()
-        wifi.close()
     }
 }

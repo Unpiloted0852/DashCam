@@ -185,7 +185,7 @@ class MainActivity : AppCompatActivity() {
         liveBox.visibility = View.VISIBLE
         liveW = 0; liveH = 0
         setLiveStatus("Asking the remote camera…")
-        s.liveListener = { m -> onLiveAnswer(m) }
+        s.liveListener = { updateLive() }
         liveTexture.surfaceTexture?.let { startViewer(it) }
         ticker.removeCallbacks(liveKeepAlive)
         ticker.post(liveKeepAlive)
@@ -194,22 +194,30 @@ class MainActivity : AppCompatActivity() {
     }
 
     private val liveNoAnswer = Runnable {
-        if (liveOpen && service?.liveAnswer == null)
+        if (liveOpen && service?.liveAnswer == null && service?.liveAddr == null)
             setLiveStatus("⚠ No answer from the remote camera — it may run an older DashCam without live view. Update it.")
     }
 
     private fun startViewer(st: SurfaceTexture) {
         if (liveViewer != null) return
-        liveViewer = LiveViewer(this, Surface(st), { t -> if (liveOpen) setLiveStatus(t) }) { w, h ->
+        liveViewer = LiveViewer(Surface(st), { t -> if (liveOpen) setLiveStatus(t) }) { w, h ->
             liveW = w; liveH = h; layoutLive()
         }
-        service?.liveAnswer?.let { onLiveAnswer(it) }
+        updateLive()
     }
 
-    private fun onLiveAnswer(m: org.json.JSONObject) {
+    /** Service news (group joined, error, …): connect the viewer or say what's happening. */
+    private fun updateLive() {
         if (!liveOpen) return
-        if (!m.optBoolean("ok")) { setLiveStatus("⚠ Remote camera: ${m.optString("err", "can't show live view")}"); return }
-        liveViewer?.offer(m.getString("ssid"), m.getString("pass"), m.getString("token"))
+        val s = service ?: return
+        val addr = s.liveAddr
+        val token = s.liveAnswer?.optString("token")
+        val a = s.liveAnswer
+        when {
+            addr != null && !token.isNullOrEmpty() -> liveViewer?.connect(addr, token)
+            a != null && !a.optBoolean("ok") -> setLiveStatus("⚠ Remote camera: ${a.optString("err", "can't show live view")}")
+            s.liveJoinStatus.isNotEmpty() -> setLiveStatus(s.liveJoinStatus)
+        }
     }
 
     /** Fit the video into the screen, keeping its shape; optionally mirrored like a rear-view mirror. */

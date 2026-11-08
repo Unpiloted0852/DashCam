@@ -357,7 +357,7 @@ class CameraPipeline(
     // ---------------------------------------------------------------- live view
 
     /** Start the live-view encoder (about [longSide] px on the long side). Idempotent. */
-    fun startLive(sink: LiveSink, longSide: Int = 960, bitrate: Int = 2_500_000) {
+    fun startLive(sink: LiveSink, longSide: Int = 1280, bitrate: Int = 6_000_000) {
         runOnGl(5000) {
             val e = egl ?: return@runOnGl
             if (liveCodec != null) { requestLiveKeyFrame(); return@runOnGl }
@@ -375,17 +375,17 @@ class CameraPipeline(
                     setInteger(MediaFormat.KEY_FRAME_RATE, 30)
                     setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
                     setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
-                    setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel31)
+                    setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel4)
                     setInteger(MediaFormat.KEY_PRIORITY, 0)
                     if (Build.VERSION.SDK_INT >= 30) setInteger(MediaFormat.KEY_LATENCY, 1)
                 }
                 codec.setCallback(LiveCallback(sink), enc)
                 codec.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
                 val input = codec.createInputSurface()
+                sink.onLiveFormat(w, h)   // before start(): the SPS/PPS that follows must not be wiped
                 codec.start()
                 liveEgl = e.createWindowSurface(input)
                 liveCodec = codec; liveInput = input; liveSize = Size(w, h); liveAngle = angle
-                sink.onLiveFormat(w, h)
                 EventLog.log("Live", "${role.label}: live view encoder ${w}x$h")
             } catch (ex: Exception) {
                 EventLog.log("Live", "live encoder failed: ${ex.message}")
