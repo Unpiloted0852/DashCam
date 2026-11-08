@@ -1,6 +1,9 @@
 package com.example.dashcam
 
 import android.Manifest
+import android.content.ComponentName
+import android.content.ServiceConnection
+import android.os.IBinder
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.graphics.Bitmap
@@ -10,6 +13,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.provider.MediaStore
 import android.text.format.DateUtils
 import android.util.LruCache
@@ -88,6 +92,100 @@ class ClipsActivity : AppCompatActivity() {
     }
 
     override fun onResume() { super.onResume(); reload() }
+
+    // ------------------------------------------------------------------ the remote camera's clips
+
+    private var service: DashCamService? = null
+    private var boundSvc = false
+    /** Remote clips by recording key; empty when there's no remote or it isn't reachable. */
+    private var remoteByKey: Map<String, RemoteClip> = emptyMap()
+    private var remoteNote = ""
+    private var remoteFetching = false
+    private var lastDlRefresh = 0L
+
+    private val svcListener: () -> Unit = {
+        val now = SystemClock.elapsedRealtime()
+        val s = service
+        if (s != null && remoteByKey.isEmpty() && !remoteFetching && s.liveAddr != null) fetchRemote()
+        // Progress refresh at most twice a second; a finished download shows up as a local clip.
+        if (s != null && now - lastDlRefresh > 500) {
+            lastDlRefresh = now
+            if (s.downloads.values.any { it.finished && it.clip.key !in all.filter { p -> p.remote != null }.map { p -> p.key } }) reload()
+            else adapter.notifyDataSetChanged()
+        }
+    }
+
+    private val conn = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            val s = (binder as DashCamService.LocalBinder).service
+            service = s
+            s.addListener(svcListener)
+            if (DashSettings(this@ClipsActivity).isPrimary) fetchRemote()
+        }
+        override fun onServiceDisconnected(name: ComponentName?) { service = null }
+    }
+
+    override fun onStart() {
+        super.onStart()
+        // Keeps the main phone's service (and its link to the remote) alive while browsing clips.
+        if (DashSettings(this).isPrimary) boundSvc = bindService(Intent(this, DashCamService::class.java), conn, BIND_AUTO_CREATE)
+    }
+
+    override fun onStop() {
+        service?.removeListener(svcListener)
+        if (boundSvc) { unbindService(conn); boundSvc = false }
+        service = null
+        super.onStop()
+    }
+
+    private fun fetchRemote() {
+        val s = service ?: return
+        val addr = s.liveAddr
+        val token = s.liveAnswer?.optString("token")
+        if (addr == null || token.isNullOrEmpty()) {
+            remoteNote = if (s.linkConnected) " · Remote camera: connecting…" else " · Remote camera not connected"
+            show(); return
+        }
+        remoteFetching = true
+        io.execute {
+            val r = try { ClipServer.list(addr, token) } catch (e: Exception) { null }
+            main.post {
+                remoteFetching = false
+                if (r == null) { remoteNote = " · Remote camera's clips unavailable"; show(); return@post }
+                remoteByKey = r.associateBy { it.key }
+                show()
+            }
+        }
+    }
+
+    /** A remote clip that isn't on this phone yet. */
+    private fun remoteOnly(p: ClipPair): RemoteClip? = if (p.remote != null) null else remoteByKey[p.key]
+
+    private fun download(clips: List<RemoteClip>) {
+        val s = service ?: return
+        if (clips.isEmpty()) return
+        s.downloadRemote(clips)
+        android.widget.Toast.makeText(this, "Downloading ${plural(clips.size, "clip")} (${fmtSize(clips.sumOf { it.size })}) from the remote camera",
+            android.widget.Toast.LENGTH_SHORT).show()
+        adapter.notifyDataSetChanged()
+    }
+
+    private fun loadRemoteThumb(iv: ImageView, rc: RemoteClip) {
+        val key = rc.thumbKey()
+        iv.tag = key
+        iv.setImageDrawable(null)
+        thumbs.get(key)?.let { iv.setImageBitmap(it); return }
+        val s = service ?: return
+        val addr = s.liveAddr ?: return
+        val token = s.liveAnswer?.optString("token") ?: return
+        io.execute {
+            val bmp = try { ClipServer.thumb(addr, token, rc.name) } catch (_: Exception) { null }
+            if (bmp != null) {
+                thumbs.put(key, bmp)
+                main.post { if (iv.tag == key) iv.setImageBitmap(bmp) }
+            }
+        }
+    }
     override fun onDestroy() { io.shutdownNow(); super.onDestroy() }
     override fun onSupportNavigateUp(): Boolean {
         if (selected != null) endSelection() else finish()
@@ -112,6 +210,7 @@ class ClipsActivity : AppCompatActivity() {
         menu.findItem(R.id.lock)?.isVisible = sel.any { !it.locked }
         menu.findItem(R.id.unlock)?.isVisible = sel.any { it.locked }
         menu.findItem(R.id.save)?.isVisible = sel.isNotEmpty()
+        menu.findItem(R.id.download)?.isVisible = sel.any { remoteOnly(it) != null }
         listOf(R.id.share, R.id.delete).forEach { menu.findItem(it)?.isEnabled = sel.isNotEmpty() }
         return super.onPrepareOptionsMenu(menu)
     }
@@ -124,17 +223,18 @@ class ClipsActivity : AppCompatActivity() {
             R.id.moveIn -> offerMove(force = true)
             R.id.selectAll -> { selected?.addAll(shown.filter { !it.recording }.map { it.key }); selectionChanged() }
             R.id.selectNone -> { selected?.clear(); selectionChanged() }
-            R.id.lock -> actions.setLocked(picked(), true)
-            R.id.unlock -> actions.setLocked(picked(), false)
-            R.id.share -> actions.share(picked())
-            R.id.save -> actions.saveToGallery(picked())
-            R.id.delete -> actions.delete(picked())
+            R.id.lock -> actions.setLocked(picked().filter { it.clips.isNotEmpty() }, true)
+            R.id.unlock -> actions.setLocked(picked().filter { it.clips.isNotEmpty() }, false)
+            R.id.share -> actions.share(picked().filter { it.clips.isNotEmpty() })
+            R.id.save -> actions.saveToGallery(picked().filter { it.clips.isNotEmpty() })
+            R.id.delete -> actions.delete(picked().filter { it.clips.isNotEmpty() })
+            R.id.download -> { download(picked().mapNotNull { remoteOnly(it) }); endSelection() }
             else -> return super.onOptionsItemSelected(item)
         }
         return true
     }
 
-    private fun picked(): List<ClipPair> = selected?.let { s -> all.filter { it.key in s } } ?: emptyList()
+    private fun picked(): List<ClipPair> = selected?.let { s -> shown.filter { it.key in s } } ?: emptyList()
 
     private fun startSelection(first: ClipPair?) {
         selected = HashSet<String>().also { s -> if (first != null && !first.recording) s += first.key }
@@ -192,18 +292,40 @@ class ClipsActivity : AppCompatActivity() {
     }
 
     private fun show() {
-        shown = if (lockedOnly) all.filter { it.locked } else all
+        // Recordings that so far exist only on the remote camera phone get a row of their own.
+        val localKeys = all.map { it.key }.toSet()
+        val remoteRows = remoteByKey.values.filter { it.key !in localKeys }.map { ClipPair(it.key, null, null) }
+        val merged = (all + remoteRows).sortedByDescending { it.key }
+        shown = if (lockedOnly) merged.filter { it.locked || remoteByKey[it.key]?.locked == true } else merged
         adapter.setData(shown)
         empty.visibility = if (shown.isEmpty()) View.VISIBLE else View.GONE
         empty.text = if (lockedOnly) "No locked clips." else "No clips yet.\nRecordings appear here."
         val bytes = all.sumOf { it.sizeBytes }
         val where = if (Storage.privateMode(this)) "private" else "visible to other apps"
         summary.text = "${all.size} recordings · ${fmtSize(bytes)} · ${all.count { it.locked }} locked · " +
-            "Free: ${fmtSize(Storage.freeBytes(this, Storage.resolveVolume(this, DashSettings(this).storageVolume)))} · New clips: $where"
+            "Free: ${fmtSize(Storage.freeBytes(this, Storage.resolveVolume(this, DashSettings(this).storageVolume)))} · New clips: $where" +
+            (remoteByKey.values.count { r -> all.none { it.key == r.key && it.remote != null } }.takeIf { it > 0 }
+                ?.let { " · ${plural(it, "remote clip")} on the other phone — tap one to download" } ?: remoteNote)
     }
 
     private fun open(p: ClipPair) {
         if (p.recording) return
+        val rc = remoteOnly(p)
+        if (rc != null) {
+            val dl = service?.downloads?.get(rc.name)
+            val b = AlertDialog.Builder(this).setTitle("Remote camera clip")
+                .setMessage("${fmtDuration(rc.durationMs)} · ${fmtSize(rc.size)}, full quality, on the remote camera phone." +
+                    if (dl?.active == true) "\n\nDownloading…" else "")
+                .setNegativeButton("Cancel", null)
+            if (dl?.active != true) b.setPositiveButton("Download") { _, _ -> download(listOf(rc)) }
+            if (p.clips.isNotEmpty()) b.setNeutralButton("Play this phone's") { _, _ -> play(p) }
+            b.show()
+            return
+        }
+        play(p)
+    }
+
+    private fun play(p: ClipPair) {
         startActivity(Intent(this, PlayerActivity::class.java)
             .putExtra(PlayerActivity.EXTRA_KEY, p.key)
             // Two views for now: a remote camera clip fills whichever slot is free.
@@ -352,8 +474,17 @@ class ClipsActivity : AppCompatActivity() {
                 if (p.clips.any { it.volume != MediaStore.VOLUME_EXTERNAL_PRIMARY }) add("SD card")
                 if (p.clips.any { !it.isPrivate }) add("in gallery folder")
             }.joinToString(" · ").let { if (it.isEmpty()) "" else " · $it" }
+            val rc = remoteOnly(p)
+            val dl = rc?.let { service?.downloads?.get(it.name) }
+            val remoteText = when {
+                rc == null -> ""
+                dl?.active == true -> " · ⬇ Remote ${(dl.done * 100 / rc.size.coerceAtLeast(1))}%"
+                dl?.error != null -> " · ⚠ Remote download failed — tap to retry"
+                else -> " · Remote on other phone (${fmtSize(rc.size)}) ⬇"
+            }
+            val dur = if (p.clips.isEmpty()) rc?.durationMs ?: 0 else p.durationMs
             v.findViewById<TextView>(R.id.subtitle).text = if (p.recording) "Recording… · $cams$where"
-                else "${fmtDuration(p.durationMs)} · ${fmtSize(p.sizeBytes)} · $cams$where"
+                else "${fmtDuration(dur)}" + (if (p.clips.isNotEmpty()) " · ${fmtSize(p.sizeBytes)} · $cams" else "") + "$where$remoteText"
             val badge = v.findViewById<TextView>(R.id.badge)
             badge.text = when { p.recording -> "●"; p.locked -> "🔒"; else -> "" }
             badge.setTextColor(if (p.recording) 0xFFE53935.toInt() else title.currentTextColor)
@@ -362,6 +493,11 @@ class ClipsActivity : AppCompatActivity() {
             val rearIv = v.findViewById<ImageView>(R.id.thumbRear)
             loadThumb(rearIv, if (p.recording) null else second?.uri)
             rearIv.visibility = if (second != null) View.VISIBLE else View.INVISIBLE
+            if (rc != null && !p.recording) {
+                // Show the remote's picture in the free slot (the big one if this phone has nothing).
+                if (p.front == null && p.rear == null) loadRemoteThumb(v.findViewById(R.id.thumbFront), rc)
+                else if (second == null) { rearIv.visibility = View.VISIBLE; loadRemoteThumb(rearIv, rc) }
+            }
             val sel = selected
             val check = v.findViewById<CheckBox>(R.id.check)
             check.visibility = if (sel != null) View.VISIBLE else View.GONE

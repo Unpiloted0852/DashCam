@@ -142,7 +142,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         previewMain = null; previewCabin = null
         if (!recording && !stopping) {
             // A remote camera keeps listening for the main phone (it can't be started from the background).
-            if (settings.isRemote) enterIdle() else stopSelf()
+            if (settings.isRemote) enterIdle() else if (!downloadsBusy) stopSelf()
         }
         return true
     }
@@ -152,6 +152,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         getSystemService(CameraManager::class.java).unregisterAvailabilityCallback(availability)
         ui.removeCallbacks(retry)
         stopLive("app closed")
+        dlExec.shutdownNow()
         stopLink()
         audio?.stop(); audio = null
         stopCameras()
@@ -586,12 +587,12 @@ class DashCamService : Service(), CameraPipeline.Listener,
                 } else {
                     lastTimeSync = 0L   // sync the clock right away
                     sendStatus()
-                    liveCreds = null; ui.post { closeLiveGroup("new connection"); ensureLiveGroup() }
+                    ui.post { verifyLiveGroup() }
                 }
             }
             if (state.phase != RemoteLink.Phase.CONNECTED) {
                 peerStatus = null
-                ui.post { stopLive("Bluetooth link lost") }
+                ui.post { if (settings.isRemote) stopLiveVideo("Bluetooth link lost") else leaveLive() }
             }
             if (was == RemoteLink.Phase.CONNECTED && state.phase != RemoteLink.Phase.CONNECTED && settings.isRemote && recording) {
                 EventLog.log("Link", "main phone gone — still recording; own end-of-drive detection takes over")
@@ -750,6 +751,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
     // joined to it, so opening the live view only has to start the camera feed (about a second).
 
     private var liveServer: LiveServer? = null
+    private var clipServer: ClipServer? = null
     private var liveWifi: WifiDirect? = null
     private var liveCreds: JSONObject? = null
     /** Remote: the main phone is watching, so the live encoder (and camera) run. */
@@ -792,7 +794,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         notifyLive()
         val t0 = now0()
         val w = WifiDirect(this).also { liveWifi = it }
-        w.join(m.getString("ssid"), m.getString("pass"), { addr ->
+        w.join(m.getString("ssid"), m.getString("pass"), m.optInt("freq"), { addr ->
             if (liveWifi !== w) return@join
             liveJoining = false; liveAddr = addr; liveJoinStatus = ""
             EventLog.log("Live", "joined the remote's Wi‑Fi Direct group in ${now0() - t0} ms ($addr)")
@@ -808,7 +810,8 @@ class DashCamService : Service(), CameraPipeline.Listener,
 
     /** Main phone: the remote's group went away (link lost, app closed). */
     private fun leaveLive() {
-        liveWifi?.close(); liveWifi = null
+        // Stay in the group (system-wide) so the next start of the app finds itself already joined.
+        liveWifi?.close(leave = false); liveWifi = null
         liveAddr = null; liveJoining = false; liveJoinedFor = null; liveAnswer = null
         notifyLive()
     }
@@ -824,13 +827,17 @@ class DashCamService : Service(), CameraPipeline.Listener,
             link?.send("live", JSONObject().put("ok", false).put("err", "can't open the video port: ${e.message}")); return
         }
         liveServer = srv
-        val ssid = "DIRECT-dc-DashCam-" + LiveLink.randomString(4)
-        val pass = LiveLink.randomString(16)
+        clipServer = try { ClipServer(this, token) } catch (e: Exception) { EventLog.log("Live", "clip server: ${e.message}"); null }
+        // Same name and passphrase every time, so a main phone that is still joined needn't join again.
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val ssid = prefs.getString("live_ssid", null) ?: ("DIRECT-dc-DashCam-" + LiveLink.randomString(4))
+        val pass = prefs.getString("live_pass", null) ?: LiveLink.randomString(16)
+        prefs.edit().putString("live_ssid", ssid).putString("live_pass", pass).apply()
         val w = WifiDirect(this).also { liveWifi = it }
-        w.createGroup(ssid, pass, {
+        w.createGroup(ssid, pass, { freq ->
             if (liveServer !== srv) return@createGroup
-            EventLog.log("Live", "Wi‑Fi Direct group $ssid up")
-            liveCreds = JSONObject().put("ok", true).put("ssid", ssid).put("pass", pass).put("token", token)
+            EventLog.log("Live", "Wi‑Fi Direct group $ssid up on $freq MHz")
+            liveCreds = JSONObject().put("ok", true).put("ssid", ssid).put("pass", pass).put("token", token).put("freq", freq)
             link?.send("live", JSONObject(liveCreds.toString()))
         }) { err ->
             if (liveServer !== srv) return@createGroup
@@ -838,6 +845,61 @@ class DashCamService : Service(), CameraPipeline.Listener,
             link?.send("live", JSONObject().put("ok", false).put("err", "Wi‑Fi Direct: $err"))
             closeLiveGroup(err)
             liveGroupRetryAt = now0() + 30_000
+        }
+    }
+
+    // ------------------------------------------------------------------ remote clip downloads (main phone)
+
+    class Download(val clip: RemoteClip) {
+        @Volatile var done = 0L
+        @Volatile var error: String? = null
+        @Volatile var finished = false
+        val active: Boolean get() = !finished && error == null
+    }
+    val downloads = java.util.concurrent.ConcurrentHashMap<String, Download>()
+    private val dlExec = Executors.newSingleThreadExecutor()
+    val downloadsBusy: Boolean get() = downloads.values.any { it.active }
+
+    /** Main phone: queue full-quality downloads of remote-camera clips into this phone's clip folder. */
+    fun downloadRemote(clips: List<RemoteClip>) {
+        for (c in clips) {
+            if (downloads[c.name]?.let { it.active || it.finished } == true) continue
+            val d = Download(c)
+            downloads[c.name] = d
+            dlExec.execute { runDownload(d) }
+        }
+        changed()
+    }
+
+    private fun runDownload(d: Download) {
+        val addr = liveAddr
+        val token = liveAnswer?.optString("token")
+        if (addr == null || token.isNullOrEmpty()) { d.error = "remote camera not connected"; changed(); return }
+        val dirs = Storage.privateDirs(this)
+        val dir = dirs[Storage.resolveVolume(this, settings.storageVolume)] ?: dirs.values.firstOrNull()
+        if (dir == null) { d.error = "no storage"; changed(); return }
+        val t0 = now0()
+        try {
+            ClipServer.download(addr, token, d.clip, dir) { d.done = it; changed() }
+            d.finished = true
+            val secs = (now0() - t0) / 1000.0
+            EventLog.log("Clips", String.format(java.util.Locale.US, "downloaded %s (%.0f MB in %.0f s, %.1f MB/s)",
+                d.clip.name, d.clip.size / 1e6, secs, d.clip.size / 1e6 / secs.coerceAtLeast(0.1)))
+        } catch (e: Exception) {
+            d.error = e.message ?: e.toString()
+            EventLog.log("Clips", "download ${d.clip.name} failed: ${d.error}")
+        }
+        changed()
+        ui.post { if (!bound && !recording && !stopping && !downloadsBusy && !settings.isRemote) stopSelf() }
+    }
+
+    /** Remote: (re)connected to the main phone: check the group is still there, then share it. */
+    private fun verifyLiveGroup() {
+        val c = liveCreds; val w = liveWifi
+        if (c == null || w == null) { ensureLiveGroup(); return }
+        w.ownsGroup(c.getString("ssid")) { ok ->
+            if (ok) link?.send("live", JSONObject(c.toString()))
+            else { closeLiveGroup("group gone"); ensureLiveGroup() }
         }
     }
 
@@ -870,6 +932,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         EventLog.log("Live", "Wi‑Fi Direct group closed ($why)")
         liveServer = null; liveCreds = null
         srv.stop()
+        clipServer?.stop(); clipServer = null
         liveWifi?.close(); liveWifi = null
     }
 

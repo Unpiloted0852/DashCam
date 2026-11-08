@@ -4,6 +4,7 @@
     <item android:id="@+id/selectAll" android:title="Select all" app:showAsAction="ifRoom" />
     <item android:id="@+id/share" android:title="Share" app:showAsAction="ifRoom" />
     <item android:id="@+id/delete" android:title="Delete" app:showAsAction="ifRoom" />
+    <item android:id="@+id/download" android:title="Download from remote" app:showAsAction="never" />
     <item android:id="@+id/lock" android:title="Lock" app:showAsAction="never" />
     <item android:id="@+id/unlock" android:title="Unlock" app:showAsAction="never" />
     <item android:id="@+id/save" android:title="Save to gallery" app:showAsAction="never" />

@@ -83,8 +83,23 @@ class WifiDirect(ctx: Context) {
     }
 
     /** Remote camera: become a group owner with this name and passphrase. */
-    fun createGroup(ssid: String, pass: String, onOk: () -> Unit, onFail: (String) -> Unit) =
-        tryCreate(ssid, pass, onOk, onFail, 0)
+    /** [onOk] gets the group's channel frequency (MHz, 0 if unknown) so joiners can skip scanning. */
+    fun createGroup(ssid: String, pass: String, onOk: (Int) -> Unit, onFail: (String) -> Unit) =
+        tryCreate(ssid, pass, { reportFreq(ssid, onOk, 0) }, onFail, 0)
+
+    private fun reportFreq(ssid: String, onOk: (Int) -> Unit, tries: Int) {
+        val c = ch() ?: return onOk(0)
+        mgr!!.requestGroupInfo(c) { g ->
+            val f = if (g != null && g.networkName == ssid) g.frequency else 0
+            if (f > 0 || tries >= 6) onOk(f) else ui.postDelayed({ reportFreq(ssid, onOk, tries + 1) }, 300)
+        }
+    }
+
+    /** Is this phone currently the owner of group [ssid]? */
+    fun ownsGroup(ssid: String, cb: (Boolean) -> Unit) {
+        val c = ch() ?: return cb(false)
+        mgr!!.requestGroupInfo(c) { g -> cb(g != null && g.isGroupOwner && g.networkName == ssid) }
+    }
 
     private fun tryCreate(ssid: String, pass: String, onOk: () -> Unit, onFail: (String) -> Unit, attempt: Int) {
         val c = ch() ?: return onFail("Wi‑Fi Direct unavailable")
@@ -103,9 +118,10 @@ class WifiDirect(ctx: Context) {
     }
 
     /** Main phone: join the remote's group and report the group owner's address. */
-    fun join(ssid: String, pass: String, onJoined: (InetAddress) -> Unit, onFail: (String) -> Unit) {
+    fun join(ssid: String, pass: String, freq: Int, onJoined: (InetAddress) -> Unit, onFail: (String) -> Unit) {
         val c = ch() ?: return onFail("Wi‑Fi Direct unavailable")
-        val cfg = WifiP2pConfig.Builder().setNetworkName(ssid).setPassphrase(pass).build()
+        val cfg = WifiP2pConfig.Builder().setNetworkName(ssid).setPassphrase(pass)
+            .apply { if (freq > 0) setGroupOperatingFrequency(freq) }.build()
         val deadline = SystemClock.elapsedRealtime() + 30_000
         fun poll() {
             if (closed) return
@@ -130,11 +146,12 @@ class WifiDirect(ctx: Context) {
         }
     }
 
-    fun close() {
+    /** [leave] = also end the group membership (otherwise the phone stays joined for next time). */
+    fun close(leave: Boolean = true) {
         closed = true
         ui.removeCallbacksAndMessages(null)
         val c = channel ?: return
-        try { mgr?.removeGroup(c, null) } catch (_: Exception) {}
+        if (leave) try { mgr?.removeGroup(c, null) } catch (_: Exception) {}
         if (Build.VERSION.SDK_INT >= 27) try { c.close() } catch (_: Exception) {}
         channel = null
     }
