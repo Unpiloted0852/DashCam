@@ -16,7 +16,7 @@ import kotlin.math.roundToInt
  * Text stamp (time/date/GPS/speed) drawn with Canvas into a bitmap, uploaded as a GL texture and
  * composited onto the bottom of every frame. Must be used on the GL thread.
  */
-class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: FrameDrawer, val textSize: Float = 0.055f) {
+class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: FrameDrawer, val textSize: Float = 0.044f) {
     private val portrait = frameH > frameW
     /** Room for the most lines any combination of options can wrap to; unused rows stay clear. */
     private val lineCount = MAX_LINES
@@ -33,45 +33,34 @@ class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: Frame
         FrameDrawer.floats(-1f, -1f, 1f, -1f, -1f, top, 1f, top)
     }
 
-    // Sub-pixel positioning keeps squeezed text from drifting wider than measured.
-    private val fill = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG or Paint.LINEAR_TEXT_FLAG).apply {
-        color = Color.WHITE
-        typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-        textSize = lineH * 0.70f
-    }
+    private val fill = newPaint(lineH)
     private val stroke = Paint(fill).apply {
         color = Color.BLACK
         style = Paint.Style.STROKE
         strokeWidth = fill.textSize * 0.14f
         strokeJoin = Paint.Join.ROUND
     }
-    private val bar = Paint().apply { color = 0x80000000.toInt() }
+    // See-through background: the outlined text stays readable and the video shows through.
+    private val bar = Paint().apply { color = 0x55000000 }
     private val pad = lineH * 0.3f
 
     private var layoutKey: Any? = null
-    private var maxChars = Int.MAX_VALUE
-    private var scaleX = 1f
-    private var barW = 0f
+    private var layout: Layout? = null
 
-    /**
-     * Size the stamp once from the widest possible text for these options, so the bar and the
-     * text size stay put second to second instead of growing and shrinking with the data.
-     */
-    private fun layoutFor(o: OverlayOptions) {
-        if (layoutKey == o) return
-        layoutKey = o
-        val avail = bmp.width - 2 * pad
-        fill.textScaleX = 1f
-        // How many characters fit at normal width; longer groups wrap onto extra lines.
-        maxChars = (avail / fill.measureText("0")).toInt().coerceAtLeast(20)
-        val template = Telemetry.overlayTemplate(o, portrait, maxChars).take(lineCount)
-        fun widestAt(sx: Float): Float { fill.textScaleX = sx; return template.maxOf { fill.measureText(it) } }
-        // Glyph widths don't scale exactly linearly, so measure with the squeeze applied and refine.
-        var sx = 1f
-        repeat(3) { val w = widestAt(sx); if (w > avail) sx *= avail / w * 0.995f }
-        scaleX = sx
-        // The box always spans the full frame width, however short the lines are.
-        barW = bmp.width.toFloat()
+    /** Work out, once per set of options, where every field sits; live values then fill those spots. */
+    private fun layoutFor(o: OverlayOptions): Layout {
+        // Re-plan if the options change or the position moves to a different number of degree digits.
+        val key = o to Telemetry.coordDigits()
+        layout?.let { if (layoutKey == key) return it }
+        layoutKey = key
+        val template = Telemetry.stampTemplate(o, portrait)
+        return computeLayout(fill, template, bmp.width - 2 * pad, lineH)
+            .also { lay ->
+                layout = lay; stroke.textScaleX = fill.textScaleX
+                EventLog.log("Stamp", "${frameW}x$frameH: ${lay.lines} lines — " + template.mapIndexed { gi, g ->
+                    g.mapIndexed { fi, f -> "${lay.slots[gi][fi].line}:${f.text}" }.joinToString(" | ")
+                }.joinToString(" // "))
+            }
     }
 
     /** [frameWallMs]: accurate wall time at which the frame was captured. */
@@ -79,16 +68,41 @@ class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: Frame
         val key = "${frameWallMs / 1000}|${Telemetry.version}|${o.hashCode()}"
         if (key == lastKey) return
         lastKey = key
-        layoutFor(o)
-        val lines = Telemetry.overlayLines(o, portrait, frameWallMs, maxChars).take(lineCount)
+        val lay = layoutFor(o)
+        val groups = Telemetry.stampFields(o, portrait, frameWallMs)
 
         bmp.eraseColor(Color.TRANSPARENT)
-        fill.textScaleX = scaleX; stroke.textScaleX = scaleX
-        val top = (lineCount - lines.size) * lineH   // keep text hugging the bottom edge
-        canvas.drawRoundRect(RectF(0f, top, barW, bmpH.toFloat()), pad, pad, bar)
-        lines.forEachIndexed { i, l ->
-            val y = top + i * lineH + lineH * 0.78f
-            canvas.drawText(l, pad, y, stroke); canvas.drawText(l, pad, y, fill)
+        val lines = lay.lines.coerceAtMost(lineCount)
+        val top = (lineCount - lines) * lineH   // keep the stamp hugging the bottom edge
+        // Full-width box exactly as tall as the text lines.
+        canvas.drawRect(RectF(0f, top, bmp.width.toFloat(), bmpH.toFloat()), bar)
+        // Which line each live field goes on comes from the layout; within a line, fields are drawn
+        // with even gaps (empty ones, like heading while stopped, take no space).
+        val perLine = Array(lines) { ArrayList<Pair<Telemetry.Field, Boolean>>() }
+        groups.forEachIndexed { gi, fields ->
+            fields.forEachIndexed { fi, f ->
+                val slot = lay.slots.getOrNull(gi)?.getOrNull(fi) ?: return@forEachIndexed
+                if (slot.line < lines && f.text.isNotEmpty()) perLine[slot.line].add(f to slot.right)
+            }
+        }
+        val avail = bmp.width - 2 * pad
+        val gap = lineH * GAP_EM
+        for (li in 0 until lines) {
+            val left = perLine[li].filter { !it.second }.map { it.first.text }
+            val right = perLine[li].filter { it.second }.map { it.first.text }
+            val sx = lay.scaleX
+            fill.textScaleX = sx; stroke.textScaleX = sx
+            fun width(items: List<String>) = items.sumOf { fill.measureText(it).toDouble() }.toFloat() + gap * (items.size - 1).coerceAtLeast(0)
+            val need = width(left) + (if (right.isEmpty()) 0f else gap * 2 + width(right))
+            // Rare: live values longer than planned for — narrow just this line to fit.
+            if (need > avail) { val k = sx * avail / need; fill.textScaleX = k; stroke.textScaleX = k }
+            val y = top + li * lineH + lineH * 0.76f
+            var x = pad
+            for (t in left) { canvas.drawText(t, x, y, stroke); canvas.drawText(t, x, y, fill); x += fill.measureText(t) + gap }
+            if (right.isNotEmpty()) {
+                var rx = pad + avail - width(right)
+                for (t in right) { canvas.drawText(t, rx, y, stroke); canvas.drawText(t, rx, y, fill); rx += fill.measureText(t) + gap }
+            }
         }
 
         GLES20.glBindTexture(GLES20.GL_TEXTURE_2D, tex)
@@ -110,17 +124,60 @@ class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: Frame
         bmp.recycle()
     }
 
+    /** Where one field goes: line number, left edge and reserved width (pixels, inside the padding). */
+    class Slot(val line: Int, val x: Float, val width: Float, val right: Boolean)
+    class Layout(val slots: List<List<Slot>>, val lines: Int, val scaleX: Float)
+
     companion object {
         const val MAX_LINES = 8
+        /** Space between fields, as a fraction of the line height. */
+        const val GAP_EM = 0.6f
 
-        /** Characters per line that fit at normal width on a [frameW] x [frameH] frame. */
-        fun maxCharsFor(frameW: Int, frameH: Int, textSize: Float): Int {
-            val lineH = max(16, (minOf(frameW, frameH) * textSize).roundToInt()).toFloat()
-            val p = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
-                typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
-                this.textSize = lineH * 0.70f
+        /** Bold monospace: every digit is the same width, so numbers don't wobble as they change. */
+        fun newPaint(lineH: Float) = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
+            color = Color.WHITE
+            typeface = Typeface.create(Typeface.MONOSPACE, Typeface.BOLD)
+            textSize = lineH * 0.70f
+        }
+
+        /**
+         * Place fields from the widest-case [template]: each group starts a new line, fields flow
+         * left to right with a fixed gap and wrap when the next one wouldn't fit; right-aligned
+         * fields (camera name) sit at the right end of their group's first line. If a single field
+         * is wider than the line, the font is narrowed just enough to fit it.
+         */
+        fun computeLayout(paint: Paint, template: List<List<Telemetry.Field>>, avail: Float, lineH: Float): Layout {
+            val gap = lineH * GAP_EM
+            paint.textScaleX = 1f
+            val widest = template.flatten().maxOfOrNull { paint.measureText(it.text) } ?: 0f
+            if (widest > avail) paint.textScaleX = (avail / widest) * 0.98f
+            val slots = ArrayList<List<Slot>>()
+            var line = 0
+            for (group in template) {
+                val firstLine = line
+                val rightW = group.filter { it.right }.sumOf { paint.measureText(it.text).toDouble() }.toFloat()
+                var limit = if (rightW > 0) avail - rightW - gap else avail
+                var x = -1f   // -1 = nothing on this line yet
+                val out = ArrayList<Slot>()
+                for (f in group) {
+                    val w = paint.measureText(f.text)
+                    if (f.right) { out.add(Slot(firstLine, avail - w, w, true)); continue }
+                    if (x >= 0 && x + gap + w > limit) { line++; x = -1f; limit = avail }
+                    val left = if (x < 0) 0f else x + gap
+                    out.add(Slot(line, left, w, false))
+                    x = left + w
+                }
+                slots.add(out)
+                line++
             }
-            return ((frameW - 2 * lineH * 0.3f) / p.measureText("0")).toInt().coerceAtLeast(20)
+            return Layout(slots, line, paint.textScaleX)
+        }
+
+        /** How many lines the stamp takes on a [frameW] x [frameH] frame (for placing on-screen controls). */
+        fun lineCountFor(frameW: Int, frameH: Int, o: OverlayOptions): Int {
+            val lineH = max(16, (minOf(frameW, frameH) * o.textSize).roundToInt()).toFloat()
+            val avail = frameW - 2 * lineH * 0.3f
+            return computeLayout(newPaint(lineH), Telemetry.stampTemplate(o, frameH > frameW), avail, lineH).lines
         }
     }
 }

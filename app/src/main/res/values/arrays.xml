@@ -18,7 +18,7 @@
     <string-array name="autostop_labels"><item>Off</item><item>After 2 min</item><item>After 5 min</item><item>After 10 min</item><item>After 15 min</item><item>After 30 min</item></string-array>
     <string-array name="autostop_values"><item>0</item><item>2</item><item>5</item><item>10</item><item>15</item><item>30</item></string-array>
     <string-array name="stamp_size_labels"><item>Small</item><item>Normal</item><item>Large</item></string-array>
-    <string-array name="stamp_size_values"><item>0.042</item><item>0.055</item><item>0.07</item></string-array>
+    <string-array name="stamp_size_values"><item>small</item><item>normal</item><item>large</item></string-array>
     <string-array name="clock_labels"><item>24-hour (14:05:09)</item><item>12-hour (02:05:09 PM)</item></string-array>
     <string-array name="clock_values"><item>24</item><item>12</item></string-array>
     <string-array name="speed_labels"><item>mph and km/h</item><item>mph</item><item>km/h</item><item>Don\'t show</item></string-array>
@@ -30,4 +30,6 @@
     <string-array name="weather_labels"><item>Airport code</item><item>Temperature</item><item>Dew point</item><item>Relative humidity</item><item>Wind and gusts</item><item>Visibility</item><item>Cloud base and cover</item><item>Rain, snow, fog…</item><item>Altimeter setting</item></string-array>
     <string-array name="weather_values"><item>station</item><item>temp</item><item>dew</item><item>rh</item><item>wind</item><item>vis</item><item>clouds</item><item>wx</item><item>qnh</item></string-array>
     <string-array name="weather_defaults"><item>station</item><item>temp</item><item>rh</item><item>wind</item><item>clouds</item></string-array>
+    <string-array name="zone_labels"><item>Abbreviation (e.g. CET)</item><item>Offset (e.g. UTC+1)</item><item>Both (e.g. CET (UTC+1))</item><item>Don\'t show</item></string-array>
+    <string-array name="zone_values"><item>abbr</item><item>offset</item><item>both</item><item>none</item></string-array>
 </resources>

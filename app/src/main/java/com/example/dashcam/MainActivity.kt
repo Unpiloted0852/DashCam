@@ -187,7 +187,7 @@ class MainActivity : AppCompatActivity() {
                 val opts = settings.overlayOptions("FRONT")
                 val h = resources.displayMetrics.heightPixels
                 val w = h * 16 / 9   // landscape video frame as shown on screen
-                val lines = Telemetry.overlayTemplate(opts, false, OverlayTexture.maxCharsFor(w, h, opts.textSize)).size
+                val lines = OverlayTexture.lineCountFor(w, h, opts)
                 (lines * opts.textSize * resources.displayMetrics.heightPixels).toInt() + dp(10)
             }
         }.also { controls.layoutParams = it }
