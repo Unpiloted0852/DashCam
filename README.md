@@ -9,7 +9,8 @@ Android dashcam that records the road (main/rear-facing camera) and the cabin/re
 - **Configurable stamp:** a compact block at the bottom of the frame, kept small so the video stays
   clear: date/time (24 h or 12 h, local or UTC, zone shown as CET, UTC+1, both or not at all),
   camera name, custom text, and each of GPS position ± accuracy, speed (mph / km/h / both), heading,
-  altitude (ft / m), satellite count, optional place name (road and town), and an optional weather
+  altitude (ft / m), satellite count, optional place name (road matched to OpenStreetMap road shapes
+  using position and heading, like a navigation app; town from Android's geocoder), and an optional weather
   line from the nearest METAR (airport, temperature, dew point, humidity, wind/gusts, visibility,
   cloud base, rain/snow/fog, altimeter setting). Small / normal / large text. Line breaks are fixed
   per setup, so the stamp keeps its shape while driving. GPS position is also written into the MP4
@@ -108,3 +109,8 @@ adb install -r app/build/outputs/apk/debug/app-debug.apk
 ```
 Experimental builds (`./gradlew assembleExp`) install as "DashCam exp" (`com.example.dashcam.exp`) next to
 the real app and never self-update. Don't publish releases from experimental branches.
+
+## Credits
+Road names and shapes: © [OpenStreetMap](https://www.openstreetmap.org/copyright) contributors, served as
+vector tiles by [OpenFreeMap](https://openfreemap.org) (© OpenMapTiles). Only the ~1.5 km tile around the
+car is downloaded; tiles are kept on the phone.

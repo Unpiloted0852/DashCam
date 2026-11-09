@@ -111,7 +111,7 @@
         <SwitchPreferenceCompat app:key="stamp_accuracy" app:title="GPS accuracy (±m)"
             app:dependency="show_coords" app:defaultValue="true" />
         <SwitchPreferenceCompat app:key="stamp_place" app:title="Place name (road and town)"
-            app:summary="Looked up with Android's geocoder, which sends your position to Google"
+            app:summary="Road matched on the phone to OpenStreetMap roads (© OpenStreetMap contributors, map tiles by OpenFreeMap; only the ~1.5 km area is downloaded). Town from Android's geocoder, which sends your position to Google"
             app:defaultValue="false" />
         <ListPreference app:key="stamp_speed" app:title="Speed"
             app:entries="@array/speed_labels" app:entryValues="@array/speed_values"
