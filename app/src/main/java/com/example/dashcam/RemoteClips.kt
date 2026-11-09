@@ -36,6 +36,9 @@ class ClipServer(ctx: Context, private val token: String) {
     private val pool = Executors.newFixedThreadPool(4)
     @Volatile private var running = true
     @Volatile private var cache: Pair<Long, List<Clip>>? = null
+    private val transfers = java.util.concurrent.atomic.AtomicInteger()
+    /** A clip download is in progress (don't move the group to another channel now). */
+    val busy: Boolean get() = transfers.get() > 0
 
     init { Thread({ accept() }, "clip-server").apply { isDaemon = true; start() } }
 
@@ -94,11 +97,14 @@ class ClipServer(ctx: Context, private val token: String) {
                         val head = if (from > 0) "HTTP/1.1 206 Partial Content\r\nContent-Range: bytes $from-${len - 1}/$len\r\n"
                                    else "HTTP/1.1 200 OK\r\n"
                         out.write((head + "Content-Type: video/mp4\r\nContent-Length: ${len - from}\r\nConnection: close\r\n\r\n").toByteArray())
-                        app.contentResolver.openInputStream(c.uri)?.use { fin ->
-                            var skip = from
-                            while (skip > 0) { val n = fin.skip(skip); if (n <= 0) break; skip -= n }
-                            fin.copyTo(out, 256 * 1024)
-                        }
+                        transfers.incrementAndGet()
+                        try {
+                            app.contentResolver.openInputStream(c.uri)?.use { fin ->
+                                var skip = from
+                                while (skip > 0) { val n = fin.skip(skip); if (n <= 0) break; skip -= n }
+                                fin.copyTo(out, 256 * 1024)
+                            }
+                        } finally { transfers.decrementAndGet() }
                         out.flush()
                     }
                     else -> reply(out, 404, "text/plain", ByteArray(0))

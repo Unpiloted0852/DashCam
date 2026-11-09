@@ -61,6 +61,13 @@ object LiveLink {
     const val KIND_FRAME = 2
 }
 
+/** Channel (MHz) of the Wi‑Fi network this phone is connected to, or 0. */
+@Suppress("DEPRECATION")
+fun wifiStationFreq(ctx: Context): Int = try {
+    val info = ctx.applicationContext.getSystemService(android.net.wifi.WifiManager::class.java)?.connectionInfo
+    if (info != null && info.networkId != -1 && info.frequency > 0) info.frequency else 0
+} catch (_: Exception) { 0 }
+
 /** Thin wrapper over WifiP2pManager callbacks. All callbacks arrive on the main thread. */
 @SuppressLint("MissingPermission")
 class WifiDirect(ctx: Context) {
@@ -84,8 +91,16 @@ class WifiDirect(ctx: Context) {
 
     /** Remote camera: become a group owner with this name and passphrase. */
     /** [onOk] gets the group's channel frequency (MHz, 0 if unknown) so joiners can skip scanning. */
-    fun createGroup(ssid: String, pass: String, onOk: (Int) -> Unit, onFail: (String) -> Unit) =
+    /**
+     * [preferFreq]: put the group on this channel (MHz), e.g. the home Wi‑Fi's, so a phone that is
+     * also on that Wi‑Fi doesn't have to keep hopping between two channels (which halves the speed
+     * or worse). 0 = any 5 GHz channel.
+     */
+    fun createGroup(ssid: String, pass: String, preferFreq: Int, onOk: (Int) -> Unit, onFail: (String) -> Unit) {
+        this.preferFreq = preferFreq
         tryCreate(ssid, pass, { reportFreq(ssid, onOk, 0) }, onFail, 0)
+    }
+    private var preferFreq = 0
 
     private fun reportFreq(ssid: String, onOk: (Int) -> Unit, tries: Int) {
         val c = ch() ?: return onOk(0)
@@ -104,8 +119,14 @@ class WifiDirect(ctx: Context) {
     private fun tryCreate(ssid: String, pass: String, onOk: () -> Unit, onFail: (String) -> Unit, attempt: Int) {
         val c = ch() ?: return onFail("Wi‑Fi Direct unavailable")
         // 5 GHz first (several times faster for clip downloads); any band if the phone can't.
+        // Attempts: the preferred (Wi‑Fi) channel, then any 5 GHz channel, then any band.
+        val tryFreq = preferFreq > 0 && attempt == 0
+        val try5 = if (preferFreq > 0) attempt == 1 else attempt == 0
         val cfg = WifiP2pConfig.Builder().setNetworkName(ssid).setPassphrase(pass)
-            .apply { if (attempt == 0) setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_5GHZ) }.build()
+            .apply {
+                if (tryFreq) setGroupOperatingFrequency(preferFreq)
+                else if (try5) setGroupOperatingBand(WifiP2pConfig.GROUP_OWNER_BAND_5GHZ)
+            }.build()
         mgr!!.removeGroup(c, action("remove", { go(c, cfg, ssid, pass, onOk, onFail, attempt) },
             { go(c, cfg, ssid, pass, onOk, onFail, attempt) }))
     }
@@ -114,7 +135,8 @@ class WifiDirect(ctx: Context) {
                    onOk: () -> Unit, onFail: (String) -> Unit, attempt: Int) {
         if (closed) return
         mgr!!.createGroup(c, cfg, action("create group", onOk) { err ->
-            if (attempt < 3 && !closed) ui.postDelayed({ tryCreate(ssid, pass, onOk, onFail, attempt + 1) }, 1500)
+            val maxAttempt = if (preferFreq > 0) 4 else 3
+            if (attempt < maxAttempt && !closed) ui.postDelayed({ tryCreate(ssid, pass, onOk, onFail, attempt + 1) }, 1500)
             else onFail(err)
         })
     }

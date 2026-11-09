@@ -589,10 +589,12 @@ class DashCamService : Service(), CameraPipeline.Listener,
                 if (a != null && a.optBoolean("ok") && liveAddr == null && !liveJoining) joinLive(a)
             }
             if (tickCount % 5 == 0L) sendState()
+            if (tickCount % 10 == 1L) l.send("wifi", JSONObject().put("freq", wifiStationFreq(this)))
         } else {
             if (tickCount % 3 == 0L) sendStatus()
             if (liveVideo && now0() - liveAskedAt > LIVE_KEEPALIVE_MS) ui.post { stopLiveVideo("main phone stopped asking") }
             if (liveCreds == null && tickCount % 10 == 0L) ui.post { ensureLiveGroup() }
+            if (liveCreds != null && tickCount % 10 == 5L) ui.post { retuneLiveGroup() }
             val now = SystemClock.elapsedRealtime()
             if (lastTimeSync == 0L || now - lastTimeSync > TIME_SYNC_EVERY_MS) { lastTimeSync = now; syncTimeFromPeer() }
         }
@@ -645,6 +647,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
                 "state" -> ui.post { applyPeerState(m) }
                 "lock" -> ui.post { lockClip(fromPeer = true) }
                 "live" -> ui.post { if (m.optBoolean("on")) liveRequested() else stopLiveVideo("main phone closed the view") }
+                "wifi" -> mainWifiFreq = m.optInt("freq")
             }
         }
     }
@@ -803,7 +806,8 @@ class DashCamService : Service(), CameraPipeline.Listener,
     private fun onLiveAnswer(m: JSONObject) {
         liveAnswer = m
         if (!m.optBoolean("ok")) { notifyLive(); return }
-        val same = liveJoinedFor?.let { it.optString("ssid") == m.optString("ssid") && it.optString("pass") == m.optString("pass") } == true
+        val same = liveJoinedFor?.let { it.optString("ssid") == m.optString("ssid") && it.optString("pass") == m.optString("pass") &&
+            it.optInt("freq") == m.optInt("freq") } == true
         if (same && (liveAddr != null || liveJoining)) { notifyLive(); return }
         joinLive(m)
     }
@@ -856,9 +860,11 @@ class DashCamService : Service(), CameraPipeline.Listener,
         val pass = prefs.getString("live_pass", null) ?: LiveLink.randomString(16)
         prefs.edit().putString("live_ssid", ssid).putString("live_pass", pass).apply()
         val w = WifiDirect(this).also { liveWifi = it }
-        w.createGroup(ssid, pass, { freq ->
+        val want = wantedGroupFreq()
+        w.createGroup(ssid, pass, want, { freq ->
             if (liveServer !== srv) return@createGroup
-            EventLog.log("Live", "Wi‑Fi Direct group $ssid up on $freq MHz")
+            EventLog.log("Live", "Wi‑Fi Direct group $ssid up on $freq MHz" +
+                if (want > 0) (if (freq == want) " (same channel as Wi‑Fi)" else " (wanted $want MHz, the Wi‑Fi channel)") else "")
             liveCreds = JSONObject().put("ok", true).put("ssid", ssid).put("pass", pass).put("token", token).put("freq", freq)
             link?.send("live", JSONObject(liveCreds.toString()))
         }) { err ->
@@ -946,6 +952,30 @@ class DashCamService : Service(), CameraPipeline.Listener,
         mainCam?.let { c -> worker.execute { c.stopLive() } }
         if (!bound && !recording && !stopping && settings.isRemote) enterIdle()
         changed()
+    }
+
+    /** Main phone's Wi‑Fi channel (MHz, 0 = not on Wi‑Fi), reported over the Bluetooth link. */
+    @Volatile private var mainWifiFreq = 0
+    private var retuneWanted = 0
+    private var retunedAt = 0L
+
+    /** Channel for the group: the main phone's Wi‑Fi, else this phone's, else 0 (any 5 GHz). */
+    private fun wantedGroupFreq(): Int = mainWifiFreq.takeIf { it > 0 } ?: wifiStationFreq(this)
+
+    /**
+     * Remote: if either phone joined a Wi‑Fi network on another channel (e.g. arriving home), move the
+     * group onto it, but only while nobody is watching or downloading, and not more than once a minute.
+     */
+    private fun retuneLiveGroup() {
+        val have = liveCreds?.optInt("freq") ?: return
+        val want = wantedGroupFreq()
+        if (want <= 0 || have <= 0 || want == have) { retuneWanted = 0; return }
+        if (liveVideo || clipServer?.busy == true || now0() - retunedAt < 60_000) return
+        // Ask twice in a row (20 s apart) so a brief Wi‑Fi blip doesn't tear the group down.
+        if (retuneWanted != want) { retuneWanted = want; return }
+        retuneWanted = 0; retunedAt = now0()
+        closeLiveGroup("moving to the Wi‑Fi channel ($have → $want MHz)")
+        ensureLiveGroup()
     }
 
     private fun closeLiveGroup(why: String) {
