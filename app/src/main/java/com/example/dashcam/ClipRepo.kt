@@ -49,7 +49,13 @@ object ClipRepo {
     private fun durationOf(f: File): Long {
         val key = "${f.path}|${f.lastModified()}|${f.length()}"
         synchronized(durations) { durations[key]?.let { return it } }
-        val ms = try {
+        // Our own clips carry their length in the header: read it directly.
+        val quick = try {
+            android.os.ParcelFileDescriptor.open(f, android.os.ParcelFileDescriptor.MODE_READ_ONLY).use {
+                Fmp4Muxer.readDurationMs(it.fileDescriptor)
+            }
+        } catch (_: Exception) { null }
+        val ms = quick ?: try {
             MediaMetadataRetriever().run {
                 try { setDataSource(f.path); extractMetadata(MediaMetadataRetriever.METADATA_KEY_DURATION)?.toLong() ?: 0L }
                 finally { release() }

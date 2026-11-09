@@ -435,7 +435,11 @@ class MainActivity : AppCompatActivity() {
         linkStatus.setTextColor(if (ls?.startsWith("⚠") == true) 0xFFFFCC80.toInt() else 0xFFFFFFFF.toInt())
         val f = s?.mainCam?.focusStatus
         focusStatus.visibility = if (f.isNullOrEmpty()) View.GONE else View.VISIBLE
-        focusStatus.text = "Front focus: $f" + (s?.cabinCam?.focusStatus?.let { "  ·  Rear: $it" } ?: "")
+        val stab = listOfNotNull(
+            s?.mainCam?.stabStatus?.takeIf { it.isNotEmpty() }?.let { "Front: $it" },
+            s?.cabinCam?.stabStatus?.takeIf { it.isNotEmpty() }?.let { "Rear: $it" })
+        focusStatus.text = "Front focus: $f" + (s?.cabinCam?.focusStatus?.let { "  ·  Rear: $it" } ?: "") +
+            if (stab.isEmpty()) "" else "\n" + stab.joinToString("  ·  ")
     }
 
     /** Things that change on service events. */

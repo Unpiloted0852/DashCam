@@ -47,4 +47,17 @@
         <item>medium</item>
         <item>high</item>
     </string-array>
+    <!-- Road vibration makes video wobble ("jello"); what helps depends on the phone and lens. -->
+    <string-array name="stab_labels">
+        <item>Phone default</item>
+        <item>Electronic — steadies wobble, crops the picture a little</item>
+        <item>Optical only — the lens stabilizer, no crop</item>
+        <item>Off — if the lens stabilizer itself rattles</item>
+    </string-array>
+    <string-array name="stab_values">
+        <item>default</item>
+        <item>electronic</item>
+        <item>optical</item>
+        <item>off</item>
+    </string-array>
 </resources>

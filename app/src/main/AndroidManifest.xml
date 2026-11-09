@@ -70,6 +70,15 @@
             android:name=".Updater$InstallReceiver"
             android:exported="false" />
 
+        <!-- After a self-update: offers to reopen the app (Android leaves it closed). -->
+        <receiver
+            android:name=".Updater$UpdatedReceiver"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+            </intent-filter>
+        </receiver>
+
         <!-- Serves a private clip to another app only when the user shares it. -->
         <provider
             android:name=".ClipProvider"

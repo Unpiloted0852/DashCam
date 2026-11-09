@@ -149,24 +149,51 @@ class Fmp4Muxer(fd: FileDescriptor) {
         all.putInt(8 + mdatPayload); all.put("mdat".toByteArray(Charsets.US_ASCII))
         for (t in tracks) for (s in t.samples) all.put(s.data)
         all.flip()
-        val at = ch.size()
-        ch.position(at)
-        writeFully(all)
-        out.fd.sync()   // survive a power loss, not just an app crash
-        frags += Frag(at, all.limit().toLong(), vDur.sum(), ticks(v, v.samples[0].ptsUs))
+        val frag = Frag(ch.size(), all.limit().toLong(), vDur.sum(), ticks(v, v.samples[0].ptsUs))
+        // Whatever happens, this GOP leaves memory: a failing disk must not pile frames up in RAM.
         for (t in tracks) t.samples.clear()
+        try {
+            ch.position(frag.offset)
+            writeFully(all)
+        } catch (e: Exception) {
+            // Storage full or gone: drop the half-written fragment so the file stays playable.
+            try { ch.truncate(frag.offset) } catch (_: Exception) {}
+            throw e
+        }
+        frags += frag
+        syncSoon()
+    }
+
+    private val syncLock = Any()
+    private var closed = false
+    private val syncQueued = java.util.concurrent.atomic.AtomicBoolean()
+
+    /**
+     * Push the data to storage so it survives a power loss, not just an app crash — on a background
+     * thread, because a sync can take a while on a slow SD card and must not hold up the encoder.
+     */
+    private fun syncSoon() {
+        if (!syncQueued.compareAndSet(false, true)) return
+        SYNC.execute {
+            syncQueued.set(false)
+            synchronized(syncLock) { if (!closed) try { ch.force(false) } catch (_: Exception) {} }
+        }
     }
 
     /** Write the last fragment, the seek index and the durations. */
     fun stop() {
         if (!started) return
-        flushFragment(null)
-        finish(rd, ch, meta, frags)
-        out.fd.sync()
         started = false
+        try { flushFragment(null) } finally {
+            synchronized(syncLock) {
+                finish(rd, ch, meta, frags)
+                out.fd.sync()
+            }
+        }
     }
 
-    fun release() {}   // the caller closes the descriptor
+    /** After this the caller may close the descriptor. */
+    fun release() { synchronized(syncLock) { closed = true } }
 
     private fun writeFully(b: ByteBuffer) { while (b.hasRemaining()) ch.write(b) }
 
@@ -283,43 +310,62 @@ class Fmp4Muxer(fd: FileDescriptor) {
         private const val RESERVE = 64 * 1024
         private const val MARKER = "DCIX"
         private const val START_BOX = "dcst"
+        private val SYNC = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+            Thread(r, "clip-sync").apply { isDaemon = true }
+        }
 
-        /** The first frame's capture time stored by [setStartWall], or null (older clip / not ours). */
-        fun readStartWall(fd: FileDescriptor): Long? {
+        /** The clip's moov box (header), or null if it can't be found near the start. */
+        private fun loadMoov(fd: FileDescriptor): ByteBuffer? {
             val rd = java.io.FileInputStream(fd).channel
             val len = rd.size()
-            fun at(pos: Long, n: Int): ByteBuffer? {
-                if (pos + n > len) return null
-                val b = ByteBuffer.allocate(n); rd.read(b, pos); b.flip(); return if (b.limit() == n) b else null
-            }
-            // Top level: find moov (it comes right after ftyp in our files).
             var pos = 0L
-            var moov: Pair<Long, Long>? = null
             for (i in 0 until 8) {
-                val h = at(pos, 8) ?: return null
+                if (pos + 8 > len) return null
+                val h = ByteBuffer.allocate(8); rd.read(h, pos); h.flip()
+                if (h.limit() < 8) return null
                 val size = h.int.toLong() and 0xFFFFFFFFL
                 val type = String(ByteArray(4).also { h.get(it) }, Charsets.US_ASCII)
                 if (size < 8) return null
-                if (type == "moov") { moov = pos to size; break }
+                if (type == "moov") {
+                    if (size > 1_000_000 || pos + size > len) return null
+                    val m = ByteBuffer.allocate(size.toInt()); rd.read(m, pos); m.flip()
+                    return if (m.limit() == size.toInt()) m else null
+                }
                 pos += size
             }
-            val (mPos, mSize) = moov ?: return null
-            if (mSize > 1_000_000) return null
-            val m = at(mPos, mSize.toInt()) ?: return null
-            fun find(from: Int, to: Int, want: String): Pair<Int, Int>? {
-                var p = from
-                while (p + 8 <= to) {
-                    val s = m.getInt(p); if (s < 8 || p + s > to) return null
-                    val t = String(ByteArray(4) { m.get(p + 4 + it) }, Charsets.US_ASCII)
-                    if (t == want) return p to s
-                    p += s
-                }
-                return null
+            return null
+        }
+
+        /** Find a child box of [want] type between [from] and [to]: (position, size). */
+        private fun findBox(m: ByteBuffer, from: Int, to: Int, want: String): Pair<Int, Int>? {
+            var p = from
+            while (p + 8 <= to) {
+                val s = m.getInt(p); if (s < 8 || p + s > to) return null
+                val t = String(ByteArray(4) { m.get(p + 4 + it) }, Charsets.US_ASCII)
+                if (t == want) return p to s
+                p += s
             }
-            val (uPos, uSize) = find(8, mSize.toInt(), "udta") ?: return null
-            val (dPos, dSize) = find(uPos + 8, uPos + uSize, START_BOX) ?: return null
+            return null
+        }
+
+        /** The first frame's capture time stored by [setStartWall], or null (older clip / not ours). */
+        fun readStartWall(fd: FileDescriptor): Long? {
+            val m = loadMoov(fd) ?: return null
+            val (uPos, uSize) = findBox(m, 8, m.limit(), "udta") ?: return null
+            val (dPos, dSize) = findBox(m, uPos + 8, uPos + uSize, START_BOX) ?: return null
             if (dSize < 16) return null
             return m.getLong(dPos + 8).takeIf { it > 0 }
+        }
+
+        /** Length in ms straight from the header (much quicker than a media scan), or null if unknown. */
+        fun readDurationMs(fd: FileDescriptor): Long? {
+            val m = loadMoov(fd) ?: return null
+            val (p, size) = findBox(m, 8, m.limit(), "mvhd") ?: return null
+            if (size < 32 || m.get(p + 8).toInt() != 0) return null
+            val timescale = m.getInt(p + 20).toLong() and 0xFFFFFFFFL
+            val duration = m.getInt(p + 24).toLong() and 0xFFFFFFFFL
+            if (timescale == 0L || duration == 0L) return null
+            return duration * 1000 / timescale
         }
 
         private fun csd(f: MediaFormat, key: String): ByteArray {
@@ -409,6 +455,25 @@ class Fmp4Muxer(fd: FileDescriptor) {
         private fun put32(ch: FileChannel, pos: Long, v: Long) { val b = ByteBuffer.allocate(4).putInt(v.toInt()); b.flip(); ch.write(b, pos) }
         private fun put64(ch: FileChannel, pos: Long, v: Long) { val b = ByteBuffer.allocate(8).putLong(v); b.flip(); ch.write(b, pos) }
         private fun get32(ch: FileChannel, pos: Long): Long { val b = ByteBuffer.allocate(4); ch.read(b, pos); b.flip(); return b.int.toLong() and 0xFFFFFFFFL }
+
+        /** Quick read-only check: is this one of our clips that was never closed? */
+        fun isUnfinished(fd: FileDescriptor): Boolean {
+            val rd = java.io.FileInputStream(fd).channel
+            val len = rd.size()
+            var pos = 0L
+            for (i in 0 until 4) {
+                if (pos + 12 > len) return false
+                val b = ByteBuffer.allocate(12); rd.read(b, pos); b.flip()
+                if (b.limit() < 12) return false
+                val size = b.int.toLong() and 0xFFFFFFFFL
+                val type = String(ByteArray(4).also { b.get(it) }, Charsets.US_ASCII)
+                if (size < 8) return false
+                if (type == "free") return String(ByteArray(4).also { b.get(it) }, Charsets.US_ASCII) == MARKER
+                if (type != "ftyp" && type != "moov") return false
+                pos += size
+            }
+            return false
+        }
 
         /** Result of [repair]. */
         enum class Repair { NOT_NEEDED, REPAIRED, EMPTY, NOT_OURS }

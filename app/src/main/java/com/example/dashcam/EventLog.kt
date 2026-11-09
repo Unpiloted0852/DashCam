@@ -23,19 +23,28 @@ object EventLog {
         log("App", "start v${BuildConfig.VERSION_NAME} on ${Build.MANUFACTURER} ${Build.MODEL}, Android ${Build.VERSION.RELEASE}")
     }
 
-    @Synchronized
+    /** File writes happen here, so logging never stalls the UI, camera or encoder threads. */
+    private val io = java.util.concurrent.Executors.newSingleThreadExecutor { r ->
+        Thread(r, "event-log").apply { isDaemon = true }
+    }
+
     fun log(tag: String, msg: String) {
         Log.i("Event/$tag", msg)
         val f = file ?: return
-        try {
-            f.appendText("${fmt.format(Date())} [$tag] $msg\n")
-            if (f.length() > MAX_BYTES) {
-                val text = f.readText()
-                f.writeText(text.substring(text.length / 2).substringAfter('\n'))
-            }
-        } catch (_: Exception) {}
+        val now = Date()
+        io.execute {
+            try {
+                f.appendText("${fmt.format(now)} [$tag] $msg\n")
+                if (f.length() > MAX_BYTES) {
+                    val text = f.readText()
+                    f.writeText(text.substring(text.length / 2).substringAfter('\n'))
+                }
+            } catch (_: Exception) {}
+        }
     }
 
-    @Synchronized
-    fun read(): String = try { file?.readText() ?: "" } catch (_: Exception) { "" }
+    /** The whole log, including lines still waiting to be written. */
+    fun read(): String = try {
+        io.submit<String> { file?.readText() ?: "" }.get(3, java.util.concurrent.TimeUnit.SECONDS)
+    } catch (_: Exception) { "" }
 }

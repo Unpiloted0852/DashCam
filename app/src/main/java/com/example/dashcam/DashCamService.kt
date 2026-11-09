@@ -123,6 +123,8 @@ class DashCamService : Service(), CameraPipeline.Listener,
         TrueTime.start()
         PlaceName.start(this) { settings.showPlace }
         Thread({ Storage.repairUnfinished(applicationContext) }, "repair").start()
+        getSystemService(PowerManager::class.java).addThermalStatusListener(mainExecutor, thermalListener)
+        Updater.beforeInstall = { done -> ui.post { stopForUpdate(done) } }
         getSystemService(CameraManager::class.java).registerAvailabilityCallback(availability, ui)
         startCameras()
         startLink()
@@ -151,6 +153,8 @@ class DashCamService : Service(), CameraPipeline.Listener,
     override fun onDestroy() {
         PreferenceManager.getDefaultSharedPreferences(this).unregisterOnSharedPreferenceChangeListener(this)
         getSystemService(CameraManager::class.java).unregisterAvailabilityCallback(availability)
+        getSystemService(PowerManager::class.java).removeThermalStatusListener(thermalListener)
+        Updater.beforeInstall = null
         ui.removeCallbacks(retry)
         stopLive("app closed")
         dlExec.shutdownNow()
@@ -238,6 +242,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
     private fun configure(p: CameraPipeline) {
         val main = p.role == CameraPipeline.Role.MAIN
         p.focus = if (main) settings.mainFocus else settings.cabinFocus
+        p.stabilization = if (main) settings.mainStabilization else settings.cabinStabilization
         p.mirror = !main && settings.cabinMirror
         p.rotate180 = if (main) settings.mainRotate180 else settings.cabinRotate180
         p.displayRotation = displayRotationDeg
@@ -246,7 +251,8 @@ class DashCamService : Service(), CameraPipeline.Listener,
 
     override fun onCameraStarted(p: CameraPipeline) {
         ui.post {
-            EventLog.log("Cam", "${p.role.label} streaming ${p.size.width}x${p.size.height}, focus ${p.focusStatus}")
+            EventLog.log("Cam", "${p.role.label} streaming ${p.size.width}x${p.size.height}, focus ${p.focusStatus}" +
+                if (p.stabStatus.isNotEmpty()) ", ${p.stabStatus}" else "")
             if (p === cabinCam) cabinOpenFailures = 0
             if (warning?.contains("will resume automatically") == true &&
                 listOfNotNull(mainCam, cabinCam).all { it.cameraOpen }) warning = null
@@ -287,6 +293,27 @@ class DashCamService : Service(), CameraPipeline.Listener,
     }
 
     private var cabinOpenFailures = 0
+
+    private fun checkStorage() {
+        val w = Storage.lowSpaceWarning(this, recVolume)
+        if (w != storageWarning) {
+            storageWarning = w
+            if (w != null) EventLog.log("Rec", w)
+            changed()
+        }
+    }
+
+    /** An update is about to replace the app: finish the clips properly first, then call [done]. */
+    private fun stopForUpdate(done: () -> Unit) {
+        if (!recording && !stopping) { done(); return }
+        EventLog.log("Rec", "stopping for the app update")
+        stopRecording("app update")
+        val poll = object : Runnable {
+            var tries = 0
+            override fun run() { if ((recording || stopping) && tries++ < 50) ui.postDelayed(this, 200) else done() }
+        }
+        ui.post(poll)
+    }
 
     private fun giveUpOnCabin(msg: String) {
         EventLog.log("Cam", "giving up on rear camera: $msg")
@@ -355,6 +382,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         if (cams.isEmpty()) { warning = "No camera available"; changed(); return }
         val clock = linkClock ?: SegmentClock(TrueTime.nowMs(), settings.segmentMs)
         recVolume = Storage.resolveVolume(this, settings.storageVolume)
+        worker.execute { checkStorage() }
         val volumeNote = if (recVolume != settings.storageVolume)
             "Chosen storage isn't available (SD card removed?) — saving to internal storage" else null
         val wantAudio = settings.audioEnabled && hasPerm(Manifest.permission.RECORD_AUDIO)
@@ -485,6 +513,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         if (!locked) lastClosed[tag] = uri else lastClosed.remove(tag)
         worker.execute {
             Storage.enforceLimit(this, recVolume, settings.storageLimitBytes)
+            checkStorage()
         }
     }
 
@@ -524,7 +553,32 @@ class DashCamService : Service(), CameraPipeline.Listener,
     }
 
     /** First problem reported by a muxer, e.g. storage full. */
-    fun muxerError(): String? = mainCam?.muxerError ?: cabinCam?.muxerError
+    fun muxerError(): String? = mainCam?.muxerError ?: cabinCam?.muxerError ?: storageWarning ?: thermalWarning
+
+    /** Storage nearly full (checked when recording starts and whenever a clip is finished). */
+    @Volatile private var storageWarning: String? = null
+
+    // ------------------------------------------------------------------ heat
+
+    /** A phone in the sun behind a windscreen overheats; say so before Android shuts the camera off. */
+    @Volatile private var thermalWarning: String? = null
+    private val thermalListener = PowerManager.OnThermalStatusChangedListener { status ->
+        val name = when (status) {
+            PowerManager.THERMAL_STATUS_NONE -> "normal"; PowerManager.THERMAL_STATUS_LIGHT -> "light"
+            PowerManager.THERMAL_STATUS_MODERATE -> "moderate"; PowerManager.THERMAL_STATUS_SEVERE -> "severe"
+            PowerManager.THERMAL_STATUS_CRITICAL -> "critical"; PowerManager.THERMAL_STATUS_EMERGENCY -> "emergency"
+            else -> "shutdown"
+        }
+        EventLog.log("Heat", "phone temperature: $name" + if (recording) " (recording)" else "")
+        thermalWarning = when {
+            status >= PowerManager.THERMAL_STATUS_CRITICAL ->
+                "Phone is overheating — Android may stop the cameras. Cool it down (shade, air vent)."
+            status >= PowerManager.THERMAL_STATUS_SEVERE ->
+                "Phone is very hot — move it out of the sun or into the air stream to keep recording."
+            else -> null
+        }
+        changed()
+    }
 
     // ------------------------------------------------------------------ settings
 

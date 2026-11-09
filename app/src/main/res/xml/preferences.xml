@@ -67,6 +67,9 @@
             app:dependency="main_far_focus"
             app:entries="@array/focus_labels" app:entryValues="@array/focus_values"
             app:defaultValue="inf" app:useSimpleSummaryProvider="true" />
+        <ListPreference app:key="main_stabilization" app:title="Stabilization (against wobble)"
+            app:entries="@array/stab_labels" app:entryValues="@array/stab_values"
+            app:defaultValue="default" app:useSimpleSummaryProvider="true" />
         <SwitchPreferenceCompat app:key="main_rotate180" app:title="Rotate 180°"
             app:summary="Use if the video comes out upside down" app:defaultValue="false" />
     </PreferenceCategory>
@@ -85,6 +88,10 @@
             app:dependency="cabin_far_focus"
             app:entries="@array/focus_labels" app:entryValues="@array/focus_values"
             app:defaultValue="inf" app:useSimpleSummaryProvider="true" />
+        <ListPreference app:key="cabin_stabilization" app:title="Stabilization (against wobble)"
+            app:dependency="cabin_enabled"
+            app:entries="@array/stab_labels" app:entryValues="@array/stab_values"
+            app:defaultValue="default" app:useSimpleSummaryProvider="true" />
         <SwitchPreferenceCompat app:key="cabin_mirror" app:title="Mirror image"
             app:dependency="cabin_enabled"
             app:summary="Flip left/right like a rear-view mirror (plates read backwards)" app:defaultValue="false" />

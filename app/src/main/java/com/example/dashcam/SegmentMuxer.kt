@@ -84,6 +84,11 @@ class SegmentMuxer(
             m.writeSampleData(vTrack, buf, info)
         } catch (e: Exception) {
             Log.e(TAG, "video write", e)
+            // Shown on screen: a full or removed card must not fail silently.
+            if (lastError == null) {
+                lastError = "Can't save video (${e.message ?: e.javaClass.simpleName}) — storage full or removed?"
+                EventLog.log("Clip", "$tag: write failed: ${e.message}")
+            }
         }
         if (first) {
             // When the file's first frame was captured (frame times use the monotonic clock).

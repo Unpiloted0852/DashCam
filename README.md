@@ -36,6 +36,13 @@ Android dashcam that records the road (main/rear-facing camera) and the cabin/re
 - **Background:** foreground service + wake lock; keeps recording with the screen off or another app
   (navigation) in front. Asks once for an unrestricted-battery exemption.
 - **Loop recording** in 1–10 min clips with a size limit (oldest deleted first) and a 1 GB free-space floor.
+  The last 10 minutes are never loop-deleted; a nearly full storage shows a warning instead.
+- **Crash-safe clips:** written as fragmented MP4, one fragment per second, so a crash or power loss
+  costs at most about a second; unfinished clips are repaired at the next start.
+- **Crash detection:** a hard jolt or the phone falling while driving locks the clip (sensitivity setting).
+- **Stabilization** per camera against wobble from road vibration: phone default, electronic, optical
+  only, or off (what works depends on the phone and lens; the main screen shows what is in effect).
+- **Heat warning** when Android reports the phone is getting too hot to keep recording.
 - **Lock clip** (button or notification) protects the current and previous clip in `Movies/DashCam/Locked`.
 - **Auto-start** every time the app is opened (setting).
 - **End-of-drive detection:** after you've driven, recording stops when you walk away (step

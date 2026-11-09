@@ -23,6 +23,9 @@ class DashSettings(ctx: Context) {
     private val bitsPerPixel: Float get() = str("quality", "0.15").toFloat()
     val audioEnabled: Boolean get() = bool("audio_enabled", true)
 
+    /** default / electronic / optical / off, per camera. */
+    val mainStabilization: String get() = str("main_stabilization", "default")
+    val cabinStabilization: String get() = str("cabin_stabilization", "default")
     val mainFocus: FocusConfig get() = FocusConfig(bool("main_far_focus", true), str("main_focus_target", "inf"))
     val cabinFocus: FocusConfig get() = FocusConfig(bool("cabin_far_focus", false), str("cabin_focus_target", "inf"))
 

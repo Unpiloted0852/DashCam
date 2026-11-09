@@ -80,6 +80,10 @@ class CameraPipeline(
     private val maxAfRegions = chars.get(CameraCharacteristics.CONTROL_MAX_REGIONS_AF) ?: 0
     private val activeArray = chars.get(CameraCharacteristics.SENSOR_INFO_ACTIVE_ARRAY_SIZE)
     private val fpsRange: Range<Int>? = chooseFps()
+    private val eisModes = chars.get(CameraCharacteristics.CONTROL_AVAILABLE_VIDEO_STABILIZATION_MODES)?.toSet() ?: emptySet()
+    private val oisModes = chars.get(CameraCharacteristics.LENS_INFO_AVAILABLE_OPTICAL_STABILIZATION)?.toSet() ?: emptySet()
+    private val hasEis = CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON in eisModes
+    private val hasOis = CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON in oisModes
 
     @Volatile var size: Size = chooseSize(requestedSize); private set
 
@@ -98,7 +102,7 @@ class CameraPipeline(
     private var previewOverlay: OverlayTexture? = null
     private var oesTex = 0
     private var st: SurfaceTexture? = null
-    private var camSurface: Surface? = null
+    @Volatile private var camSurface: Surface? = null   // made on the GL thread, used on the camera thread
     private val stMatrix = FloatArray(16)
     private val mvp = FloatArray(16)
     private var previewEgl: EGLSurface? = null
@@ -145,9 +149,18 @@ class CameraPipeline(
 
     // --- settings (any thread) ---
     @Volatile var focus = FocusConfig(false, "inf")
-        set(v) { field = v; cam.post { applyRequest() } }
+        set(v) { if (field != v) { field = v; cam.post { applyRequest() } } }
     @Volatile var displayRotation = 0
-        set(v) { field = v; cam.post { applyRequest() } }   // AF region depends on orientation
+        set(v) { if (field != v) { field = v; cam.post { applyRequest() } } }   // AF region depends on orientation
+    /**
+     * Against wobble from road vibration: "default" (whatever the phone does), "electronic"
+     * (gyro-based; also straightens rolling-shutter "jello"; crops a little), "optical" (lens
+     * stabiliser only) or "off" (both off: for a lens stabiliser that rattles on a car mount).
+     */
+    @Volatile var stabilization = "default"
+        set(v) { if (field != v) { field = v; cam.post { applyRequest() } } }
+    /** What the camera is actually doing about stabilization, for the UI ("" = phone default). */
+    @Volatile var stabStatus = ""; private set
     @Volatile var mirror = false
     @Volatile var rotate180 = false
     @Volatile var overlayOptions = OverlayOptions(role.label)
@@ -639,6 +652,10 @@ class CameraPipeline(
     @SuppressLint("MissingPermission")
     private fun openCamera() {
         if (released || device != null || opening) return
+        // Asked to open before the GL side is ready (e.g. by the "camera is free" callback right
+        // after start-up): GL setup opens the camera itself once the surface exists. Opening now
+        // would leave a camera with nowhere to send frames and nothing to retry it.
+        if (camSurface == null) return
         opening = true
         openAttempt++
         val attempt = openAttempt
@@ -697,7 +714,11 @@ class CameraPipeline(
     }
 
     private fun createSession(d: CameraDevice) {
-        val surface = camSurface ?: return
+        val surface = camSurface
+        if (surface == null) {   // surface went away meanwhile: close, so a later open can succeed
+            d.close(); device = null; session = null
+            return
+        }
         val exec = Executor { cam.post(it) }
         val cb = object : CameraCaptureSession.StateCallback() {
             override fun onConfigured(s: CameraCaptureSession) {
@@ -762,9 +783,52 @@ class CameraPipeline(
                     "auto"
                 }
             }
-            s.setRepeatingRequest(b.build(), null, cam)
+            val want = stabilization
+            stabStatus = applyStabilization(b, want)
+            try {
+                s.setRepeatingRequest(b.build(), if (want == "electronic" && hasEis) stabCheck() else null, cam)
+            } catch (e: IllegalArgumentException) {
+                // Some phones refuse stabilization in certain modes (e.g. two cameras at once).
+                if (want == "default") throw e
+                applyStabilization(b, "default")
+                stabStatus = "stabilization not available"
+                s.setRepeatingRequest(b.build(), null, cam)
+            }
         } catch (e: Exception) {
             Log.e(TAG, "applyRequest", e)
+        }
+    }
+
+    /** Set the stabilization keys for [mode]; returns the status to show. */
+    private fun applyStabilization(b: CaptureRequest.Builder, mode: String): String {
+        fun eis(on: Boolean) { if (eisModes.isNotEmpty()) b.set(CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE,
+            if (on) CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON else CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_OFF) }
+        fun ois(on: Boolean) { if (hasOis) b.set(CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE,
+            if (on) CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_ON else CaptureRequest.LENS_OPTICAL_STABILIZATION_MODE_OFF) }
+        return when (mode) {
+            // Android advises against running both at once: they fight each other.
+            "electronic" -> if (hasEis) { eis(true); ois(false); "electronic stabilization" }
+                            else if (hasOis) { ois(true); "optical stabilization (electronic not supported)" }
+                            else "no stabilization on this lens"
+            "optical" -> if (hasOis) { eis(false); ois(true); "optical stabilization" }
+                         else { eis(false); "no optical stabilizer on this lens" }
+            "off" -> { eis(false); ois(false); "stabilization off" }
+            else -> ""
+        }
+    }
+
+    /** Checks once, on the first frame, whether the phone really switched electronic stabilization on. */
+    private fun stabCheck() = object : CameraCaptureSession.CaptureCallback() {
+        private var checked = false
+        override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, result: android.hardware.camera2.TotalCaptureResult) {
+            if (checked) return
+            checked = true
+            val on = result.get(android.hardware.camera2.CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE) ==
+                CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON
+            if (!on && stabilization == "electronic") {
+                stabStatus = "electronic stabilization refused by the phone"
+                EventLog.log("Cam", "${role.label}: $stabStatus")
+            }
         }
     }
 

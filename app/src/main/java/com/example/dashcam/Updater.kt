@@ -93,34 +93,89 @@ object Updater {
         Toast.makeText(a, "Downloading v${r.version}…", Toast.LENGTH_SHORT).show()
         val ctx = a.applicationContext
         Thread {
-            try {
-                val pi = ctx.packageManager.packageInstaller
-                val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
-                params.setAppPackageName(ctx.packageName)
-                if (Build.VERSION.SDK_INT >= 31) {
-                    params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
-                }
-                val id = pi.createSession(params)
-                pi.openSession(id).use { session ->
-                    val conn = URL(r.apkUrl).openConnection() as HttpURLConnection
-                    conn.instanceFollowRedirects = true
-                    conn.connectTimeout = 15_000; conn.readTimeout = 30_000
-                    conn.inputStream.use { input ->
-                        session.openWrite("dashcam.apk", 0, if (r.apkSize > 0) r.apkSize else -1).use { out ->
-                            input.copyTo(out, 64 * 1024)
-                            session.fsync(out)
-                        }
+            val pi = ctx.packageManager.packageInstaller
+            var lastError: Exception? = null
+            // A download can drop on a weak connection: try a few times before giving up.
+            for (attempt in 1..3) {
+                var id = -1
+                try {
+                    val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+                    params.setAppPackageName(ctx.packageName)
+                    if (Build.VERSION.SDK_INT >= 31) {
+                        params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
                     }
-                    val status = PendingIntent.getBroadcast(ctx, id,
-                        Intent(ctx, InstallReceiver::class.java),
-                        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
-                    session.commit(status.intentSender)
+                    id = pi.createSession(params)
+                    val session = pi.openSession(id)
+                    session.use {
+                        val conn = URL(r.apkUrl).openConnection() as HttpURLConnection
+                        conn.instanceFollowRedirects = true
+                        conn.connectTimeout = 15_000; conn.readTimeout = 30_000
+                        var got = 0L
+                        try {
+                            if (conn.responseCode != 200) throw java.io.IOException("server answered ${conn.responseCode}")
+                            conn.inputStream.use { input ->
+                                session.openWrite("dashcam.apk", 0, if (r.apkSize > 0) r.apkSize else -1).use { out ->
+                                    got = input.copyTo(out, 64 * 1024)
+                                    session.fsync(out)
+                                }
+                            }
+                        } finally { conn.disconnect() }
+                        if (r.apkSize > 0 && got < r.apkSize) throw java.io.IOException("download incomplete ($got of ${r.apkSize} bytes)")
+                        val status = PendingIntent.getBroadcast(ctx, id,
+                            Intent(ctx, InstallReceiver::class.java),
+                            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
+                        // Installing replaces the running app: let a recording finish its clips first.
+                        val ready = java.util.concurrent.CountDownLatch(1)
+                        val hook = beforeInstall
+                        if (hook != null) main.post { try { hook { ready.countDown() } } catch (_: Exception) { ready.countDown() } }
+                        else ready.countDown()
+                        ready.await(15, java.util.concurrent.TimeUnit.SECONDS)
+                        // commit(): the app is about to be replaced, an async write might not land.
+                        PreferenceManager.getDefaultSharedPreferences(ctx).edit().putString("update_installing", r.version).commit()
+                        EventLog.log("Update", "installing v${r.version}")
+                        session.commit(status.intentSender)
+                    }
+                    return@Thread
+                } catch (e: Exception) {
+                    lastError = e
+                    Log.e(TAG, "update attempt $attempt failed", e)
+                    EventLog.log("Update", "download attempt $attempt failed: ${e.javaClass.simpleName}: ${e.message}")
+                    if (id >= 0) try { pi.abandonSession(id) } catch (_: Exception) {}
+                    if (attempt < 3) try { Thread.sleep(2000L * attempt) } catch (_: InterruptedException) { break }
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "update failed", e)
-                main.post { Toast.makeText(ctx, "Update failed: ${e.message}", Toast.LENGTH_LONG).show() }
             }
+            main.post { Toast.makeText(ctx, "Update failed: ${lastError?.message ?: "unknown error"}", Toast.LENGTH_LONG).show() }
         }.start()
+    }
+
+    /** Set by the recording service: stops a recording cleanly, then calls back. */
+    @Volatile var beforeInstall: ((done: () -> Unit) -> Unit)? = null
+
+    /**
+     * After an update Android leaves the app closed, and a closed dashcam isn't recording: put up a
+     * notification that reopens it with one tap.
+     */
+    class UpdatedReceiver : BroadcastReceiver() {
+        override fun onReceive(ctx: Context, intent: Intent) {
+            if (intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
+            val prefs = PreferenceManager.getDefaultSharedPreferences(ctx)
+            // Only for the app's own updater (not e.g. an install from a computer).
+            if (prefs.getString("update_installing", null) == null) return
+            prefs.edit().remove("update_installing").apply()
+            EventLog.init(ctx); EventLog.log("Update", "now v${BuildConfig.VERSION_NAME}")
+            try {
+                val nm = ctx.getSystemService(android.app.NotificationManager::class.java)
+                nm.createNotificationChannel(android.app.NotificationChannel("updates", "Updates",
+                    android.app.NotificationManager.IMPORTANCE_HIGH))
+                val open = PendingIntent.getActivity(ctx, 0, Intent(ctx, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK), PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                nm.notify(20, androidx.core.app.NotificationCompat.Builder(ctx, "updates")
+                    .setSmallIcon(R.drawable.ic_notification)
+                    .setContentTitle("DashCam updated to v${BuildConfig.VERSION_NAME}")
+                    .setContentText("Tap to reopen — it isn't recording while closed")
+                    .setContentIntent(open).setAutoCancel(true).build())
+            } catch (e: Exception) { Log.w(TAG, "update notice", e) }
+        }
     }
 
     /** Receives the installer's result; shows Android's confirmation screen when it asks for one. */
@@ -136,6 +191,8 @@ object Updater {
                 else -> {
                     val msg = intent.getStringExtra(PackageInstaller.EXTRA_STATUS_MESSAGE) ?: "unknown error"
                     Log.e(TAG, "install failed: $msg")
+                    EventLog.init(ctx); EventLog.log("Update", "install failed: $msg")
+                    PreferenceManager.getDefaultSharedPreferences(ctx).edit().remove("update_installing").apply()
                     Toast.makeText(ctx, "Update not installed: $msg", Toast.LENGTH_LONG).show()
                 }
             }

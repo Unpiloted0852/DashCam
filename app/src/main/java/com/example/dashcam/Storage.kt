@@ -14,6 +14,9 @@ import android.os.storage.StorageVolume
 import android.provider.MediaStore
 import android.util.Log
 import java.io.File
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import androidx.preference.PreferenceManager
@@ -30,6 +33,15 @@ object Storage {
     const val DIR = "Movies/DashCam/"
     const val LOCKED_DIR = "Movies/DashCam/Locked/"
     private const val MIN_FREE_BYTES = 1L * 1024 * 1024 * 1024
+    private const val KEEP_RECENT_MS = 10 * 60_000L
+
+    /** Text for the screen when the storage is nearly full, else null. */
+    fun lowSpaceWarning(ctx: Context, volume: String): String? {
+        val free = freeBytes(ctx, volume)
+        if (free >= MIN_FREE_BYTES) return null
+        return "Storage almost full (${free / (1024 * 1024)} MB free): older clips are deleted early and " +
+            "recording may stop. Free up space or pick another storage in Settings."
+    }
 
     /** Clips currently being written (by URI). Guarded by [lock] together with create/delete. */
     private val openIds = HashSet<String>()
@@ -188,10 +200,14 @@ object Storage {
      */
     fun repairUnfinished(ctx: Context) = synchronized(repairLock) {
         val names = lockedNames(ctx)
-        fun fix(uri: Uri, open: () -> ParcelFileDescriptor?): Fmp4Muxer.Companion.Repair? {
+        // Look first, read-only: opening a shared clip for writing makes Android re-scan it, and
+        // nearly every clip is already complete.
+        fun fix(uri: Uri, open: (write: Boolean) -> ParcelFileDescriptor?): Fmp4Muxer.Companion.Repair? {
             if (isOpen(uri)) return null
             return try {
-                open()?.use { Fmp4Muxer.repair(it.fileDescriptor) }
+                if (open(false)?.use { Fmp4Muxer.isUnfinished(it.fileDescriptor) } != true) return null
+                if (isOpen(uri)) return null
+                open(true)?.use { Fmp4Muxer.repair(it.fileDescriptor) }
             } catch (e: Exception) { Log.w(TAG, "repair $uri", e); null }
         }
         for (dir in privateDirs(ctx).values) {
@@ -199,7 +215,8 @@ object Storage {
             for (f in files) {
                 if (!f.isFile || !f.name.endsWith(".mp4")) continue
                 val uri = Uri.fromFile(f)
-                when (fix(uri) { ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_WRITE) }) {
+                when (fix(uri) { w -> ParcelFileDescriptor.open(f,
+                        if (w) ParcelFileDescriptor.MODE_READ_WRITE else ParcelFileDescriptor.MODE_READ_ONLY) }) {
                     Fmp4Muxer.Companion.Repair.REPAIRED -> {
                         EventLog.log("Clip", "repaired unfinished ${f.name}")
                         if (f.name in names) movePrivate(f, true)
@@ -220,7 +237,7 @@ object Storage {
                 }
             } catch (_: Exception) {}
             for ((uri, name) in found) {
-                when (fix(uri) { ctx.contentResolver.openFileDescriptor(uri, "rw") }) {
+                when (fix(uri) { w -> ctx.contentResolver.openFileDescriptor(uri, if (w) "rw" else "r") }) {
                     Fmp4Muxer.Companion.Repair.REPAIRED -> {
                         EventLog.log("Clip", "repaired unfinished $name")
                         dataPath(ctx, uri)?.let { scanAndWait(ctx, it) }
@@ -366,9 +383,13 @@ object Storage {
         }
         clips.sortBy { it.name }   // names start with the recording time
         var total = clips.sumOf { it.size }
+        // The last few minutes are never deleted: if the phone is full of other things, deleting
+        // the clip that just finished would leave nothing at all (the screen warns instead).
+        val keepFrom = SimpleDateFormat("yyyy-MM-dd_HH-mm-ss", Locale.US).format(Date(TrueTime.nowMs() - KEEP_RECENT_MS))
         for (clip in clips) {
             if (total <= limitBytes && freeBytes(ctx, volume) >= MIN_FREE_BYTES) break
             if (clip.locked || clip.uri.toString() in openIds) continue
+            if (clip.name >= keepFrom) break   // sorted by time: everything from here on is recent
             try {
                 if (delete(ctx, clip.uri)) {
                     total -= clip.size
