@@ -9,6 +9,8 @@ class DashSettings(ctx: Context) {
     private val p = PreferenceManager.getDefaultSharedPreferences(ctx)
 
     private fun str(key: String, def: String) = p.getString(key, def) ?: def
+    /** Crash detection: off, low, medium or high sensitivity. */
+    val impactSensitivity: String get() = str("impact_sensitivity", "medium")
     private fun bool(key: String, def: Boolean) = p.getBoolean(key, def)
 
     val segmentMs: Long get() = str("segment_minutes", "3").toLong() * 60_000L
@@ -137,7 +139,7 @@ class DashSettings(ctx: Context) {
         val RESTART_KEYS = setOf("main_lens", "main_resolution", "cabin_resolution", "cabin_enabled",
             "link_role", "remote_camera")
         val LINK_KEYS = setOf("link_role", "link_device")
-        val MIRRORED_KEYS = setOf("segment_minutes", "quality", "audio_enabled",
+        val MIRRORED_KEYS = setOf("segment_minutes", "quality", "audio_enabled", "impact_sensitivity",
             "auto_stop_walk", "auto_stop_unplug", "auto_stop_minutes",
             "stamp_size", "stamp_clock", "use_utc", "overlay_label", "show_coords", "stamp_accuracy", "stamp_place",
             "stamp_speed", "stamp_heading", "stamp_altitude", "stamp_alt_unit", "stamp_sats", "stamp_weather",

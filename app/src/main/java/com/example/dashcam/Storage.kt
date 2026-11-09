@@ -173,6 +173,69 @@ object Storage {
         }
     }
 
+    /** Protect a clip that is still being recorded: its name is remembered at once (survives a crash). */
+    fun protect(ctx: Context, uri: Uri) {
+        val name = fileOf(uri)?.name ?: displayName(ctx, uri) ?: return
+        rememberLocked(ctx, name, true)
+    }
+
+    private val repairLock = Any()
+
+    /**
+     * Clips that were never closed (app killed, phone died or crashed) are fragmented MP4s without
+     * their index: make them playable and seekable, drop ones with no video at all, and move clips
+     * that were locked while recording into Locked/.
+     */
+    fun repairUnfinished(ctx: Context) = synchronized(repairLock) {
+        val names = lockedNames(ctx)
+        fun fix(uri: Uri, open: () -> ParcelFileDescriptor?): Fmp4Muxer.Companion.Repair? {
+            if (isOpen(uri)) return null
+            return try {
+                open()?.use { Fmp4Muxer.repair(it.fileDescriptor) }
+            } catch (e: Exception) { Log.w(TAG, "repair $uri", e); null }
+        }
+        for (dir in privateDirs(ctx).values) {
+            val files = dir.listFiles().orEmpty().toList() + File(dir, "Locked").listFiles().orEmpty().toList()
+            for (f in files) {
+                if (!f.isFile || !f.name.endsWith(".mp4")) continue
+                val uri = Uri.fromFile(f)
+                when (fix(uri) { ParcelFileDescriptor.open(f, ParcelFileDescriptor.MODE_READ_WRITE) }) {
+                    Fmp4Muxer.Companion.Repair.REPAIRED -> {
+                        EventLog.log("Clip", "repaired unfinished ${f.name}")
+                        if (f.name in names) movePrivate(f, true)
+                    }
+                    Fmp4Muxer.Companion.Repair.EMPTY -> { EventLog.log("Clip", "removed empty ${f.name}"); f.delete() }
+                    else -> {}
+                }
+            }
+        }
+        for (vol in MediaStore.getExternalVolumeNames(ctx)) {
+            val coll = collection(vol)
+            val found = ArrayList<Pair<Uri, String>>()
+            try {
+                ctx.contentResolver.query(coll, arrayOf(MediaStore.Video.Media._ID, MediaStore.Video.Media.DISPLAY_NAME),
+                    "${MediaStore.Video.Media.RELATIVE_PATH} LIKE ? AND ${MediaStore.MediaColumns.OWNER_PACKAGE_NAME}=?",
+                    arrayOf("$DIR%", ctx.packageName), null)?.use { c ->
+                    while (c.moveToNext()) found += ContentUris.withAppendedId(coll, c.getLong(0)) to (c.getString(1) ?: "")
+                }
+            } catch (_: Exception) {}
+            for ((uri, name) in found) {
+                when (fix(uri) { ctx.contentResolver.openFileDescriptor(uri, "rw") }) {
+                    Fmp4Muxer.Companion.Repair.REPAIRED -> {
+                        EventLog.log("Clip", "repaired unfinished $name")
+                        dataPath(ctx, uri)?.let { scanAndWait(ctx, it) }
+                        if (name in names) try { lock(ctx, uri) } catch (_: Exception) {}
+                    }
+                    Fmp4Muxer.Companion.Repair.EMPTY -> {
+                        EventLog.log("Clip", "removed empty $name")
+                        try { ctx.contentResolver.delete(uri, null, null) } catch (_: Exception) {}
+                    }
+                    else -> {}
+                }
+            }
+        }
+    }
+
     /** Mark a clip finished so loop recording may delete it later. */
     fun markClosed(uri: Uri) = synchronized(lock) { openIds -= uri.toString() }
 

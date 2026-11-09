@@ -29,6 +29,9 @@
         <ListPreference app:key="quality" app:title="Video quality"
             app:entries="@array/quality_labels" app:entryValues="@array/quality_values"
             app:defaultValue="0.15" app:useSimpleSummaryProvider="true" />
+        <ListPreference app:key="impact_sensitivity" app:title="Crash detection"
+            app:entries="@array/impact_labels" app:entryValues="@array/impact_values"
+            app:defaultValue="medium" app:useSimpleSummaryProvider="true" />
         <SwitchPreferenceCompat app:key="audio_enabled" app:title="Record audio"
             app:summary="Cabin sound, saved into both the front and rear clips" app:defaultValue="true" />
         <SwitchPreferenceCompat app:key="auto_record" app:title="Start recording when the app opens"

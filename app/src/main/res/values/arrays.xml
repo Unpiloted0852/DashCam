@@ -34,4 +34,17 @@
     <string-array name="zone_values"><item>abbr</item><item>offset</item><item>both</item><item>none</item></string-array>
     <string-array name="clip_storage_labels"><item>Private to DashCam — share only on purpose (recommended)</item><item>Visible to other apps (Movies/DashCam)</item></string-array>
     <string-array name="clip_storage_values"><item>private</item><item>shared</item></string-array>
+    <!-- Crash detection: a hard jolt (or the phone falling) while driving locks the clip. -->
+    <string-array name="impact_labels">
+        <item>Off</item>
+        <item>Low — only hard crashes (3 g)</item>
+        <item>Medium — collisions (2 g)</item>
+        <item>High — also hard braking and bumps (1.4 g)</item>
+    </string-array>
+    <string-array name="impact_values">
+        <item>off</item>
+        <item>low</item>
+        <item>medium</item>
+        <item>high</item>
+    </string-array>
 </resources>

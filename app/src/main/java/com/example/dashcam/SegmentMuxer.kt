@@ -36,7 +36,7 @@ class SegmentMuxer(
 ) {
     private var videoFormat: MediaFormat? = null
     private var audioFormat: MediaFormat? = null
-    private var muxer: MediaMuxer? = null
+    private var muxer: Sink? = null
     private var pfd: ParcelFileDescriptor? = null
     private var uri: Uri? = null
     private var vTrack = -1
@@ -101,6 +101,9 @@ class SegmentMuxer(
     fun lock() {
         lockCurrent = true
         val p = prevUri
+        // Remember the current clip's name right away, so it stays protected even if the app or
+        // phone dies before the clip is closed.
+        uri?.let { u -> Thread { Storage.protect(ctx, u) }.start() }
         if (p != null && !prevLocked) {
             prevLocked = true
             Thread { Storage.lock(ctx, p) }.start()   // may retry for a few seconds; keep it off the UI thread
@@ -121,11 +124,9 @@ class SegmentMuxer(
         try {
             val (u, fd) = Storage.create(ctx, volume, clock.fileName(idx, tag))
             created = u
-            val m = MediaMuxer(fd.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
-            Telemetry.latLon()?.let { (la, lo) -> m.setLocation(la.toFloat(), lo.toFloat()) }
-            vTrack = m.addTrack(vf)
-            aTrack = audioFormat?.let { m.addTrack(it) } ?: -1
-            m.start()
+            val m = openSink(fd, vf, audioFormat)
+            vTrack = 0
+            aTrack = if (audioFormat != null) 1 else -1
             muxer = m; pfd = fd; uri = u; segIndex = idx
             firstPtsUs = -1L; lastPtsUs = -1L
             Storage.recordStart(ctx, clock.fileName(idx, tag), TrueTime.nowMs())
@@ -165,6 +166,42 @@ class SegmentMuxer(
             prevLocked = lockCurrent
         }
         lockCurrent = false
+    }
+
+    /** The file writer: crash-safe fragmented MP4, or MediaMuxer if that can't start. */
+    private interface Sink {
+        fun writeSampleData(track: Int, buf: ByteBuffer, info: MediaCodec.BufferInfo)
+        fun stop()
+        fun release()
+    }
+
+    private fun openSink(fd: ParcelFileDescriptor, vf: MediaFormat, af: MediaFormat?): Sink {
+        val loc = Telemetry.latLon()
+        try {
+            val f = Fmp4Muxer(fd.fileDescriptor)
+            loc?.let { (la, lo) -> f.setLocation(la.toFloat(), lo.toFloat()) }
+            f.addTrack(vf); af?.let { f.addTrack(it) }
+            f.start()
+            return object : Sink {
+                override fun writeSampleData(track: Int, buf: ByteBuffer, info: MediaCodec.BufferInfo) = f.writeSampleData(track, buf, info)
+                override fun stop() = f.stop()
+                override fun release() = f.release()
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "fragmented writer failed, using MediaMuxer", e)
+            EventLog.log("Clip", "$tag: crash-safe writer unavailable (${e.message}); using standard MP4")
+            android.system.Os.ftruncate(fd.fileDescriptor, 0)
+            android.system.Os.lseek(fd.fileDescriptor, 0, android.system.OsConstants.SEEK_SET)
+        }
+        val m = MediaMuxer(fd.fileDescriptor, MediaMuxer.OutputFormat.MUXER_OUTPUT_MPEG_4)
+        loc?.let { (la, lo) -> m.setLocation(la.toFloat(), lo.toFloat()) }
+        m.addTrack(vf); af?.let { m.addTrack(it) }
+        m.start()
+        return object : Sink {
+            override fun writeSampleData(track: Int, buf: ByteBuffer, info: MediaCodec.BufferInfo) = m.writeSampleData(track, buf, info)
+            override fun stop() = m.stop()
+            override fun release() = m.release()
+        }
     }
 
     companion object { private const val TAG = "SegmentMuxer" }

@@ -122,6 +122,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         Altimeter.start(this)
         TrueTime.start()
         PlaceName.start(this) { settings.showPlace }
+        Thread({ Storage.repairUnfinished(applicationContext) }, "repair").start()
         getSystemService(CameraManager::class.java).registerAvailabilityCallback(availability, ui)
         startCameras()
         startLink()
@@ -388,6 +389,10 @@ class DashCamService : Service(), CameraPipeline.Listener,
         driveEnd = DriveEndDetector(this, settings, ::onDriveEnded) {
             settings.isRemote && link?.connected == true
         }.also { it.start() }
+        impact?.stop()
+        impact = ImpactDetector.thresholdFor(settings.impactSensitivity)?.let { g ->
+            ImpactDetector(this, g) { what -> ui.post { onImpact(what) } }.also { it.start() }
+        }
         ui.removeCallbacks(autoStopCheck)
         ui.postDelayed(autoStopCheck, 2000)
         recordingStartElapsed = SystemClock.elapsedRealtime()
@@ -421,6 +426,8 @@ class DashCamService : Service(), CameraPipeline.Listener,
         stopReason = reason
         ui.removeCallbacks(autoStopCheck)
         driveEnd?.stop(); driveEnd = null
+        impact?.stop(); impact = null
+        ui.removeCallbacks(lockAftermath)
         recording = false
         stopping = true
         sendState()
@@ -443,6 +450,21 @@ class DashCamService : Service(), CameraPipeline.Listener,
         }
     }
 
+    private var impact: ImpactDetector? = null
+
+    /** Crash detected: lock what's being recorded, and again 30 s later to keep the aftermath. */
+    private fun onImpact(what: String) {
+        if (!recording) return
+        EventLog.log("Rec", "impact detected: $what")
+        lockClip()
+        toast = "Impact detected ($what) — clip locked"
+        changed()
+        ui.removeCallbacks(lockAftermath)
+        ui.postDelayed(lockAftermath, 30_000)
+    }
+
+    private val lockAftermath = Runnable { if (recording) { lockClip(); toast = null; changed() } }
+
     fun lockClip(fromPeer: Boolean = false) {
         if (!recording) return
         // Lock on either phone locks both.
@@ -452,7 +474,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         // Also the clip just before (covers a clip that ended because the phone was turned).
         val previous = lastClosed.values.toList(); lastClosed.clear()
         if (previous.isNotEmpty()) Thread { previous.forEach { Storage.lock(this, it) } }.start()
-        toast = "Clip locked — saved to Movies/DashCam/Locked"
+        toast = "Clip locked — it won't be deleted by loop recording"
         changed()
     }
 
