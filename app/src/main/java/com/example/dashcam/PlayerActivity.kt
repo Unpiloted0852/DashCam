@@ -30,6 +30,10 @@ class PlayerActivity : AppCompatActivity() {
         val video: VideoView = findViewById(videoId)
         var mp: MediaPlayer? = null
         var offsetMs = 0
+        /** A seek is in flight; playback (re)starts only when every view has landed. */
+        var seeking = false
+        var speed = 1f
+        var maxErr = 0
         fun local(pos: Int) = pos - offsetMs
         fun shared(mp: MediaPlayer) = runCatching { mp.currentPosition }.getOrNull()?.let { it + offsetMs }
     }
@@ -73,9 +77,17 @@ class PlayerActivity : AppCompatActivity() {
         )
         val key = intent.getStringExtra(EXTRA_KEY) ?: ""
         // Clips of one recording start a moment apart; line them up by their recorded start times.
-        val starts = tracks.map { if (it.uri != null) Storage.clipStart(this, "${key}_${it.name}.mp4") else null }
+        // Exact: the capture time of each clip's first frame, stored in the file (works for clips
+        // downloaded from the remote camera too); older clips fall back to the time noted when saved.
+        val starts = tracks.map { t ->
+            val u = t.uri ?: return@map null
+            val inFile = runCatching { contentResolver.openFileDescriptor(u, "r")?.use { Fmp4Muxer.readStartWall(it.fileDescriptor) } }.getOrNull()
+            inFile ?: Storage.clipStart(this, "${key}_${t.name}.mp4")
+        }
         val base = starts.filterNotNull().minOrNull()
-        if (base != null) tracks.forEachIndexed { i, t -> t.offsetMs = ((starts[i] ?: base) - base).toInt().coerceIn(0, 10_000) }
+        if (base != null) tracks.forEachIndexed { i, t -> t.offsetMs = ((starts[i] ?: base) - base).toInt().coerceIn(0, 60_000) }
+        EventLog.log("Player", "$key offsets: " + tracks.filter { it.uri != null }.joinToString { "${it.name} +${it.offsetMs} ms" +
+            if (starts[tracks.indexOf(it)] == null) " (unknown)" else "" })
 
         val start = ClipPair(key, null, null).startMs
         findViewById<TextView>(R.id.title).text = if (start != null) DateUtils.formatDateTime(this, start,
@@ -185,14 +197,14 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     /** The clip that drives the seek bar; the others follow it. */
-    private fun master(): Track? = tracks.firstOrNull { shown(it) && it.mp != null }
+    private fun master(): Track? = tracks.filter { shown(it) && it.mp != null }.minByOrNull { it.offsetMs }
 
     private fun onPrepared(t: Track, mp: MediaPlayer) {
-        mp.setOnSeekCompleteListener(null)
-        try {
-            mp.seekTo(t.local(positionMs).coerceAtLeast(0).toLong(), MediaPlayer.SEEK_CLOSEST)
-            if (playing) mp.start()
-        } catch (_: IllegalStateException) {}
+        mp.setOnSeekCompleteListener { t.seeking = false; startWhenSettled() }
+        t.speed = 1f
+        // Hold every view still while this one lands on the same moment, then start them together.
+        tracks.forEach { o -> if (o !== t) pauseTrack(o) }
+        seekTrack(t, positionMs)
         applyVolumes()
         seek.max = tracks.maxOf { tr -> tr.mp?.let { runCatching { it.duration }.getOrDefault(0) + tr.offsetMs } ?: 0 }
         playBtn.text = if (playing) "❚❚" else "▶"
@@ -206,26 +218,71 @@ class PlayerActivity : AppCompatActivity() {
 
     private fun play() {
         playing = true
-        if (currentPos() >= seek.max - 200) seekAll(0)
-        tracks.forEach { t -> runCatching { t.mp?.start() } }
         playBtn.text = "❚❚"
+        // Line every view up on the same moment first; they start together once all have landed.
+        seekAll(if (currentPos() >= seek.max - 200) 0 else currentPos())
     }
 
     private fun pause() {
         playing = false
-        tracks.forEach { t -> runCatching { t.mp?.pause() } }
+        tracks.forEach { t -> pauseTrack(t) }
         playBtn.text = "▶"
+        // Paused: show every camera's frame from exactly the same moment.
+        seekAll(currentPos())
     }
 
     private fun finished() = pause()
 
+    private fun seekTrack(t: Track, ms: Int) {
+        val mp = t.mp ?: return
+        val local = t.local(ms)
+        t.seeking = true
+        val ok = runCatching { mp.seekTo(local.coerceAtLeast(0).toLong(), MediaPlayer.SEEK_CLOSEST) }.isSuccess
+        if (!ok) t.seeking = false
+    }
+
     private fun seekAll(ms: Int) {
         positionMs = ms
-        for (t in tracks) {
-            val mp = t.mp ?: continue
-            runCatching { mp.seekTo(t.local(ms).coerceAtLeast(0).toLong(), MediaPlayer.SEEK_CLOSEST) }
-        }
+        tracks.forEach { t -> pauseTrack(t) }
+        tracks.forEach { t -> if (shown(t)) seekTrack(t, ms) }
         updateTime()
+        startWhenSettled()
+    }
+
+    /** Start all views in the same instant, once none is still seeking. */
+    private fun startWhenSettled() {
+        if (!playing) return
+        val live = tracks.filter { shown(it) && it.mp != null }
+        if (live.isEmpty() || live.any { it.seeking }) return
+        for (t in live) {
+            // A clip that starts later than this moment waits (paused on its first frame) until the
+            // shared timeline reaches it; the sync loop starts it then.
+            val wait = -t.local(positionMs)
+            if (wait > 0) {
+                // Parked on its first frame: start it on a timer at exactly its moment (no seek).
+                ui.postDelayed({
+                    if (playing && !t.seeking && shown(t) && !runCatching { t.mp!!.isPlaying }.getOrDefault(true)) {
+                        setSpeed(t, 1f); runCatching { t.mp?.start() }
+                    }
+                }, wait.toLong())
+                continue
+            }
+            setSpeed(t, 1f)
+            runCatching { t.mp?.start() }
+        }
+        lastSync = System.currentTimeMillis()
+    }
+
+    /** Pause only a player that is playing: pausing one that was never started is an error state. */
+    private fun pauseTrack(t: Track) {
+        val mp = t.mp ?: return
+        if (runCatching { mp.isPlaying }.getOrDefault(false)) runCatching { mp.pause() }
+    }
+
+    private fun setSpeed(t: Track, s: Float) {
+        val mp = t.mp ?: return
+        if (abs(s - t.speed) < 0.005f) return
+        if (runCatching { mp.playbackParams = mp.playbackParams.setSpeed(s) }.isSuccess) t.speed = s
     }
 
     private fun currentPos(): Int {
@@ -238,28 +295,59 @@ class PlayerActivity : AppCompatActivity() {
     }
 
     private var lastSync = 0L
+    private var lastReport = 0L
+
+    /**
+     * Keeps every view on the master's moment: small differences are trimmed by nudging the
+     * follower's playback speed (muted, so it's silent), large ones (> 250 ms) by a seek.
+     */
+    private fun syncFollowers() {
+        val m = master() ?: return
+        val mmp = m.mp ?: return
+        if (!playing || tracks.any { shown(it) && it.seeking } || !runCatching { mmp.isPlaying }.getOrDefault(false)) return
+        // Players report stale positions for a moment after starting or seeking: let them settle.
+        if (System.currentTimeMillis() - lastSync < 800) return
+        val a = m.shared(mmp) ?: return
+        for (t in tracks) {
+            if (t === m || !shown(t)) continue
+            val mp = t.mp ?: continue
+            val target = t.local(a)
+            val running = runCatching { mp.isPlaying }.getOrDefault(false)
+            if (target < 0) { if (running) pauseTrack(t); continue }   // not started yet
+            if (!running && target < 300) continue   // its timed start is about to happen
+            if (!running) { seekTrack(t, a); mp.setOnSeekCompleteListener { t.seeking = false; setSpeed(t, 1f); runCatching { mp.start() }; lastSync = System.currentTimeMillis()
+                mp.setOnSeekCompleteListener { t.seeking = false; startWhenSettled() } }; continue }
+            val b = t.shared(mp) ?: continue
+            val err = b - a   // > 0: follower ahead
+            t.maxErr = maxOf(t.maxErr, abs(err))
+            when {
+                abs(err) > 250 -> { seekTrack(t, a); lastSync = System.currentTimeMillis() }
+                abs(err) <= 8 -> setSpeed(t, 1f)
+                // Up to ±25 % while far off (closes 250 ms in about a second), ±10 % when close.
+                else -> {
+                    val lim = if (abs(err) > 50) 0.25f else 0.1f
+                    setSpeed(t, (1f - (err * 0.004f).coerceIn(-lim, lim)).let { Math.round(it * 100) / 100f })
+                }
+            }
+        }
+        val now = System.currentTimeMillis()
+        if (now - lastReport > 10_000) {
+            lastReport = now
+            val r = tracks.filter { it !== m && shown(it) && it.mp != null }
+            if (r.isNotEmpty()) EventLog.log("Player", "sync vs ${m.name}: " + r.joinToString { "${it.name} max ${it.maxErr} ms" })
+            r.forEach { it.maxErr = 0 }
+        }
+    }
+
     private val tick = object : Runnable {
         override fun run() {
             if (!dragging) {
-                positionMs = currentPos()
+                if (playing) positionMs = currentPos()
                 seek.progress = positionMs
                 updateTime()
-                // Keep followers within ~0.4 s of the master (checked every 2 s to avoid stutter).
-                val now = System.currentTimeMillis()
-                val m = master()
-                val a = m?.mp?.let { m.shared(it) }
-                if (playing && a != null && now - lastSync > 2000) {
-                    lastSync = now
-                    for (t in tracks) {
-                        if (t === m) continue
-                        val mp = t.mp ?: continue
-                        val b = t.shared(mp) ?: continue
-                        val target = t.local(a)
-                        if (abs(a - b) > 400 && target >= 0) runCatching { mp.seekTo(target.toLong(), MediaPlayer.SEEK_CLOSEST) }
-                    }
-                }
+                syncFollowers()
             }
-            ui.postDelayed(this, 250)
+            ui.postDelayed(this, 200)
         }
     }
 

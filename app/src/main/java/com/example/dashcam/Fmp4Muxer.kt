@@ -45,6 +45,19 @@ class Fmp4Muxer(fd: FileDescriptor) {
 
     fun setLocation(lat: Float, lon: Float) { location = lat to lon }
 
+    private var startPatchPos = -1L
+
+    /**
+     * Wall-clock time (ms, accurate clock) at which the first frame was captured, stored in the file
+     * (udta/dcst) so clips from different cameras — and phones — can be lined up exactly in playback.
+     */
+    fun setStartWall(ms: Long) {
+        if (!started || startPatchPos <= 0) return
+        val b = ByteBuffer.allocate(8).putLong(ms); b.flip()
+        var pos = startPatchPos
+        while (b.hasRemaining()) pos += ch.write(b, pos)
+    }
+
     fun addTrack(format: MediaFormat): Int {
         check(!started)
         val mime = format.getString(MediaFormat.KEY_MIME)
@@ -174,13 +187,14 @@ class Fmp4Muxer(fd: FileDescriptor) {
                     u32(i + 1L); u32(1); u32(0); u32(0); u32(if (t.video) NON_SYNC_FLAGS else SYNC_FLAGS)
                 }
             }
-            location?.let { (la, lo) ->
-                box("udta") {
+            box("udta") {
+                location?.let { (la, lo) ->
                     val s = String.format(Locale.US, "%+08.4f%+09.4f/", la, lo).toByteArray(Charsets.US_ASCII)
                     rawBox(byteArrayOf(0xA9.toByte(), 'x'.code.toByte(), 'y'.code.toByte(), 'z'.code.toByte())) {
                         u16(s.size); u16(0x15c7); bytes(s)
                     }
                 }
+                box(START_BOX) { startPatchPos = size.toLong(); u64(0) }
             }
         }
     }
@@ -268,6 +282,45 @@ class Fmp4Muxer(fd: FileDescriptor) {
         /** Room for the seek index: 1 entry per second → over 90 minutes; longer clips merge entries. */
         private const val RESERVE = 64 * 1024
         private const val MARKER = "DCIX"
+        private const val START_BOX = "dcst"
+
+        /** The first frame's capture time stored by [setStartWall], or null (older clip / not ours). */
+        fun readStartWall(fd: FileDescriptor): Long? {
+            val rd = java.io.FileInputStream(fd).channel
+            val len = rd.size()
+            fun at(pos: Long, n: Int): ByteBuffer? {
+                if (pos + n > len) return null
+                val b = ByteBuffer.allocate(n); rd.read(b, pos); b.flip(); return if (b.limit() == n) b else null
+            }
+            // Top level: find moov (it comes right after ftyp in our files).
+            var pos = 0L
+            var moov: Pair<Long, Long>? = null
+            for (i in 0 until 8) {
+                val h = at(pos, 8) ?: return null
+                val size = h.int.toLong() and 0xFFFFFFFFL
+                val type = String(ByteArray(4).also { h.get(it) }, Charsets.US_ASCII)
+                if (size < 8) return null
+                if (type == "moov") { moov = pos to size; break }
+                pos += size
+            }
+            val (mPos, mSize) = moov ?: return null
+            if (mSize > 1_000_000) return null
+            val m = at(mPos, mSize.toInt()) ?: return null
+            fun find(from: Int, to: Int, want: String): Pair<Int, Int>? {
+                var p = from
+                while (p + 8 <= to) {
+                    val s = m.getInt(p); if (s < 8 || p + s > to) return null
+                    val t = String(ByteArray(4) { m.get(p + 4 + it) }, Charsets.US_ASCII)
+                    if (t == want) return p to s
+                    p += s
+                }
+                return null
+            }
+            val (uPos, uSize) = find(8, mSize.toInt(), "udta") ?: return null
+            val (dPos, dSize) = find(uPos + 8, uPos + uSize, START_BOX) ?: return null
+            if (dSize < 16) return null
+            return m.getLong(dPos + 8).takeIf { it > 0 }
+        }
 
         private fun csd(f: MediaFormat, key: String): ByteArray {
             val bb = f.getByteBuffer(key) ?: throw IllegalStateException("no $key")

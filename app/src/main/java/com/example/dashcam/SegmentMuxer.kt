@@ -39,6 +39,7 @@ class SegmentMuxer(
     private var muxer: Sink? = null
     private var pfd: ParcelFileDescriptor? = null
     private var uri: Uri? = null
+    private var curName: String? = null
     private var vTrack = -1
     private var aTrack = -1
     private var segIndex = -1L
@@ -76,12 +77,20 @@ class SegmentMuxer(
             }
         }
         val m = muxer ?: return
-        if (firstPtsUs < 0) firstPtsUs = info.presentationTimeUs
+        val first = firstPtsUs < 0
+        if (first) firstPtsUs = info.presentationTimeUs
         lastPtsUs = info.presentationTimeUs
         try {
             m.writeSampleData(vTrack, buf, info)
         } catch (e: Exception) {
             Log.e(TAG, "video write", e)
+        }
+        if (first) {
+            // When the file's first frame was captured (frame times use the monotonic clock).
+            val elapsedNs = info.presentationTimeUs * 1000 + (SystemClock.elapsedRealtimeNanos() - System.nanoTime())
+            val wall = TrueTime.atElapsedNs(elapsedNs)
+            try { m.setStartWall(wall) } catch (e: Exception) { Log.w(TAG, "start time", e) }
+            curName?.let { Storage.recordStart(ctx, it, wall) }
         }
     }
 
@@ -129,7 +138,8 @@ class SegmentMuxer(
             aTrack = if (audioFormat != null) 1 else -1
             muxer = m; pfd = fd; uri = u; segIndex = idx
             firstPtsUs = -1L; lastPtsUs = -1L
-            Storage.recordStart(ctx, clock.fileName(idx, tag), TrueTime.nowMs())
+            curName = clock.fileName(idx, tag)
+            Storage.recordStart(ctx, clock.fileName(idx, tag), TrueTime.nowMs())   // refined at the first frame
             lastError = null
             Log.i(TAG, "new segment $u")
             EventLog.log("Clip", "$tag: new ${clock.fileName(idx, tag)} (audio track: ${aTrack >= 0})")
@@ -171,6 +181,7 @@ class SegmentMuxer(
     /** The file writer: crash-safe fragmented MP4, or MediaMuxer if that can't start. */
     private interface Sink {
         fun writeSampleData(track: Int, buf: ByteBuffer, info: MediaCodec.BufferInfo)
+        fun setStartWall(ms: Long) {}
         fun stop()
         fun release()
     }
@@ -184,6 +195,7 @@ class SegmentMuxer(
             f.start()
             return object : Sink {
                 override fun writeSampleData(track: Int, buf: ByteBuffer, info: MediaCodec.BufferInfo) = f.writeSampleData(track, buf, info)
+                override fun setStartWall(ms: Long) = f.setStartWall(ms)
                 override fun stop() = f.stop()
                 override fun release() = f.release()
             }
