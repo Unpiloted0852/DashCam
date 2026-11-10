@@ -57,6 +57,7 @@ object Telemetry {
         }
         val m = ctx.getSystemService(LocationManager::class.java) ?: return
         lm = m
+        Gforce.start(ctx)
         try {
             m.requestLocationUpdates(LocationManager.GPS_PROVIDER, 1000L, 0f, listener, Looper.getMainLooper())
             m.registerGnssStatusCallback(gnssCallback, Handler(Looper.getMainLooper()))
@@ -72,6 +73,7 @@ object Telemetry {
             it.unregisterGnssStatusCallback(gnssCallback)
         }
         lm = null
+        Gforce.stop()
     }
 
     // ---- remote camera: stamp data relayed from the main phone once per second
@@ -105,6 +107,7 @@ object Telemetry {
         putW("base", w.cloudBaseFt); putW("wx", w.wx)
         o.put("w", wx)
         o.put("tz", TimeZone.getDefault().id)
+        put("ag", Gforce.localG?.toDouble())
         Altimeter.metar?.let { o.put("mlat", it.lat).put("mlon", it.lon).put("mobs", it.obsEpochSec) }
         return o
     }
@@ -122,6 +125,7 @@ object Telemetry {
             ws("cov"), wi("base"), ws("wx"))
         val s = Sample(d("lat"), d("lon"), i("acc"), d("mps")?.toFloat(), d("brg")?.toFloat(), i("alt"),
             o.optInt("su"), o.optInt("sv"), str("place"), str("stn"), d("qnh")?.toFloat(), wx)
+        Gforce.relayedG = d("ag")?.toFloat()
         relay = s; relayElapsed = SystemClock.elapsedRealtime()
         // Kept after the link drops: the main phone's zone is the best one this phone has heard of.
         str("tz")?.let { id -> if (relayZone?.id != id) relayZone = TimeZone.getTimeZone(id) }

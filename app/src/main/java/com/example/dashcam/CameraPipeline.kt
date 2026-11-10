@@ -231,6 +231,7 @@ class CameraPipeline(
                 buildMvp(r.angle)
                 drawer?.drawCamera(oesTex, stMatrix, mvp)
                 ov.draw()
+                ov.drawAccel(overlayOptions, Gforce.forwardG)
                 e.setPresentationTime(r.egl, toMonotonicNs(ts))
                 e.swap(r.egl)
                 if (SystemClock.elapsedRealtime() >= r.untilElapsed) finishRetiring()
@@ -243,6 +244,7 @@ class CameraPipeline(
                 buildMvp(recAngle)
                 drawer?.drawCamera(oesTex, stMatrix, mvp)
                 ov.draw()
+                ov.drawAccel(overlayOptions, Gforce.forwardG)
                 e.setPresentationTime(s, toMonotonicNs(ts))
                 e.swap(s)
                 maybeRequestKeyFrame()
@@ -268,6 +270,7 @@ class CameraPipeline(
                 buildMvp(angle)
                 drawer?.drawCamera(oesTex, stMatrix, mvp)
                 ov.draw()
+                ov.drawAccel(overlayOptions, Gforce.forwardG)
                 if (!e.swap(s)) {
                     Log.w(TAG, "preview swap failed; dropping preview")
                     e.makeCurrent(pbuffer!!)

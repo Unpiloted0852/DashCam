@@ -54,7 +54,7 @@ class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: Frame
         val key = template
         layout?.let { if (layoutKey == key) return it }
         layoutKey = key
-        return computeLayout(fill, template, bmp.width - 2 * pad, lineH)
+        return computeLayout(fill, template, textWidth(bmp.width, lineH, o), lineH)
             .also { lay ->
                 layout = lay; stroke.textScaleX = fill.textScaleX
                 EventLog.log("Stamp", "${frameW}x$frameH: ${lay.lines} lines — " + template.mapIndexed { gi, g ->
@@ -85,7 +85,7 @@ class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: Frame
                 if (slot.line < lines && f.text.isNotEmpty()) perLine[slot.line].add(f to slot.right)
             }
         }
-        val avail = bmp.width - 2 * pad
+        val avail = textWidth(bmp.width, lineH, o)
         val gap = lineH * GAP_EM
         for (li in 0 until lines) {
             val left = perLine[li].filter { !it.second }.map { it.first.text }
@@ -119,6 +119,30 @@ class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: Frame
         if (allocated) drawer.drawOverlay(tex, quad)
     }
 
+    /**
+     * Acceleration bar at the right edge of the stamp box: a zero line across the middle, green
+     * growing upwards while speeding up, red growing downwards while braking. Drawn straight in
+     * GL on every frame (the text bitmap only changes once a second). [g]: forward acceleration.
+     */
+    fun drawAccel(o: OverlayOptions, g: Float?) {
+        if (!o.showAccel || !allocated) return
+        val lines = (layout?.lines ?: return).coerceAtMost(lineCount)
+        val barW = lineH * ACCEL_W_EM
+        fun x(px: Float) = -1f + 2f * px / frameW
+        fun y(pxFromBottom: Float) = -1f + 2f * pxFromBottom / frameH
+        val x1 = frameW - pad; val x0 = x1 - barW
+        val bottom = lineH * 0.18f; val top = lines * lineH - lineH * 0.18f
+        val mid = (bottom + top) / 2; val half = (top - bottom) / 2
+        drawer.drawRect(x(x0), y(bottom), x(x1), y(top), 0x40FFFFFF)                 // track
+        if (g != null) {
+            val h = (g / ACCEL_FULL_G).coerceIn(-1f, 1f) * half
+            if (h > 0) drawer.drawRect(x(x0), y(mid), x(x1), y(mid + h), 0xFF2ECC40.toInt())       // speeding up
+            else if (h < 0) drawer.drawRect(x(x0), y(mid + h), x(x1), y(mid), 0xFFFF3B30.toInt())  // braking
+        }
+        val t = max(1f, lineH * 0.04f)                                                // zero line
+        drawer.drawRect(x(x0 - barW * 0.35f), y(mid - t), x(x1 + barW * 0.0f), y(mid + t), 0xFFFFFFFF.toInt())
+    }
+
     fun release() {
         GLES20.glDeleteTextures(1, intArrayOf(tex), 0)
         bmp.recycle()
@@ -132,6 +156,13 @@ class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: Frame
         const val MAX_LINES = 8
         /** Space between fields, as a fraction of the line height. */
         const val GAP_EM = 0.6f
+        /** Acceleration bar: width in line heights, and the acceleration that fills half of it. */
+        const val ACCEL_W_EM = 0.42f
+        const val ACCEL_FULL_G = 0.6f
+
+        /** Width available to the text: the frame less padding, less the acceleration bar if shown. */
+        fun textWidth(frameW: Int, lineH: Float, o: OverlayOptions): Float =
+            frameW - 2 * lineH * 0.3f - if (o.showAccel) lineH * (ACCEL_W_EM * 1.35f + GAP_EM) else 0f
 
         /** Bold monospace: every digit is the same width, so numbers don't wobble as they change. */
         fun newPaint(lineH: Float) = Paint(Paint.ANTI_ALIAS_FLAG or Paint.SUBPIXEL_TEXT_FLAG).apply {
@@ -177,7 +208,7 @@ class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: Frame
         /** How many lines the stamp takes on a [frameW] x [frameH] frame (for placing on-screen controls). */
         fun lineCountFor(frameW: Int, frameH: Int, o: OverlayOptions): Int {
             val lineH = max(16, (minOf(frameW, frameH) * o.textSize).roundToInt()).toFloat()
-            val avail = frameW - 2 * lineH * 0.3f
+            val avail = textWidth(frameW, lineH, o)
             return computeLayout(newPaint(lineH), Telemetry.stampTemplate(o, frameH > frameW), avail, lineH).lines
         }
     }

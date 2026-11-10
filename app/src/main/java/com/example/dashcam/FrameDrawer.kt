@@ -33,7 +33,27 @@ class FrameDrawer {
         GLES20.glDisable(GLES20.GL_BLEND)
     }
 
+    private val colorProg = program(VS_COLOR, FS_COLOR)
+    private val rect = floats(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
+
+    /** Fills a rectangle given in NDC (−1..1) with an ARGB colour (blended). */
+    fun drawRect(x0: Float, y0: Float, x1: Float, y1: Float, argb: Int) {
+        rect.position(0); rect.put(x0).put(y0).put(x1).put(y0).put(x0).put(y1).put(x1).put(y1); rect.position(0)
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_SRC_ALPHA, GLES20.GL_ONE_MINUS_SRC_ALPHA)
+        GLES20.glUseProgram(colorProg)
+        val aPos = GLES20.glGetAttribLocation(colorProg, "aPos")
+        GLES20.glUniform4f(GLES20.glGetUniformLocation(colorProg, "uColor"),
+            (argb shr 16 and 0xFF) / 255f, (argb shr 8 and 0xFF) / 255f, (argb and 0xFF) / 255f, (argb ushr 24) / 255f)
+        GLES20.glEnableVertexAttribArray(aPos)
+        GLES20.glVertexAttribPointer(aPos, 2, GLES20.GL_FLOAT, false, 8, rect)
+        GLES20.glDrawArrays(GLES20.GL_TRIANGLE_STRIP, 0, 4)
+        GLES20.glDisableVertexAttribArray(aPos)
+        GLES20.glDisable(GLES20.GL_BLEND)
+    }
+
     fun release() {
+        GLES20.glDeleteProgram(colorProg)
         GLES20.glDeleteProgram(oesProg)
         GLES20.glDeleteProgram(texProg)
     }
@@ -77,6 +97,13 @@ class FrameDrawer {
             varying vec2 vTex;
             uniform samplerExternalOES sTex;
             void main() { gl_FragColor = texture2D(sTex, vTex); }"""
+        private const val VS_COLOR = """
+            attribute vec4 aPos;
+            void main() { gl_Position = aPos; }"""
+        private const val FS_COLOR = """
+            precision mediump float;
+            uniform vec4 uColor;
+            void main() { gl_FragColor = uColor; }"""
         private const val FS_2D = """
             precision mediump float;
             varying vec2 vTex;

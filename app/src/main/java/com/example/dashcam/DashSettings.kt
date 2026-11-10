@@ -110,6 +110,7 @@ class DashSettings(ctx: Context) {
         weather = if (bool("stamp_weather", false)) set("stamp_weather_fields", DEFAULT_WEATHER) else emptySet(),
         tempUnit = str("stamp_temp_unit", "both"),
         textSize = stampTextSize(str("stamp_size", "normal")),
+        showAccel = bool("stamp_accel", true),
     )
 
     /** Text height as a fraction of the frame's short side; kept small so the video stays clear. */
@@ -145,7 +146,7 @@ class DashSettings(ctx: Context) {
         val MIRRORED_KEYS = setOf("segment_minutes", "quality", "audio_enabled", "impact_sensitivity",
             "auto_stop_walk", "auto_stop_unplug", "auto_stop_minutes",
             "stamp_size", "stamp_clock", "use_utc", "overlay_label", "show_coords", "stamp_accuracy", "stamp_place",
-            "stamp_speed", "stamp_heading", "stamp_altitude", "stamp_alt_unit", "stamp_sats", "stamp_weather",
+            "stamp_speed", "stamp_heading", "stamp_altitude", "stamp_alt_unit", "stamp_sats", "stamp_accel", "stamp_weather",
             "stamp_weather_fields", "stamp_temp_unit", "stamp_zone")
     }
 }
@@ -187,4 +188,6 @@ data class OverlayOptions(
     val tempUnit: String = "both",
     /** Text height as a fraction of the frame's short side. */
     val textSize: Float = 0.044f,
+    /** Green/red bar for speeding up / braking at the right edge of the stamp. */
+    val showAccel: Boolean = false,
 )
