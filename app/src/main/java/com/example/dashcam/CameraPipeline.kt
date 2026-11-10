@@ -66,6 +66,7 @@ class CameraPipeline(
     }
 
     private val manager = ctx.getSystemService(CameraManager::class.java)
+    private val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(ctx.applicationContext)
     private val chars = manager.getCameraCharacteristics(cameraId)
     val isFrontFacing = chars.get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
     private val sensorOrientation = chars.get(CameraCharacteristics.SENSOR_ORIENTATION) ?: 0
@@ -158,7 +159,15 @@ class CameraPipeline(
      * stabiliser only) or "off" (both off: for a lens stabiliser that rattles on a car mount).
      */
     @Volatile var stabilization = "default"
-        set(v) { if (field != v) { field = v; cam.post { applyRequest() } } }
+        set(v) {
+            if (field == v) return
+            field = v
+            // Many phones only switch stabilization when the camera session is set up, so set it
+            // up again (a brief pause in the picture).
+            cam.post { stabRefused = false; val d = device; if (d != null && session != null) createSession(d, again = true) }
+        }
+    /** The phone rejected a session with the chosen stabilization: carry on without it. */
+    private var stabRefused = false
     /** What the camera is actually doing about stabilization, for the UI ("" = phone default). */
     @Volatile var stabStatus = ""; private set
     @Volatile var mirror = false
@@ -713,7 +722,7 @@ class CameraPipeline(
         }
     }
 
-    private fun createSession(d: CameraDevice) {
+    private fun createSession(d: CameraDevice, again: Boolean = false) {
         val surface = camSurface
         if (surface == null) {   // surface went away meanwhile: close, so a later open can succeed
             d.close(); device = null; session = null
@@ -726,11 +735,28 @@ class CameraPipeline(
                 session = s
                 cameraOpen = true
                 startedAt = SystemClock.elapsedRealtime()
+                retired.forEach { it.close() }; retired.clear()
+                relay?.let { r ->
+                    try { r.attach(surface) } catch (e: Exception) {
+                        EventLog.log("Cam", "${role.label}: can't pass on stabilized frames (${e.message}) — continuing without")
+                        stabRefused = true
+                        createSession(d, again)
+                        return
+                    }
+                }
                 applyRequest()
-                listener.onCameraStarted(this@CameraPipeline)
+                if (again) EventLog.log("Cam", "${role.label}: ${stabStatus.ifEmpty { "phone-default stabilization" }}")
+                else listener.onCameraStarted(this@CameraPipeline)
             }
             override fun onConfigureFailed(s: CameraCaptureSession) {
                 Log.w(TAG, "${role.label} configure failed at $size")
+                if (stabilization != "default" && !stabRefused) {
+                    // Not the size's fault: this phone won't stabilize in this setup. Go on without.
+                    stabRefused = true
+                    EventLog.log("Cam", "${role.label}: session with $stabilization stabilization refused — continuing without")
+                    createSession(d, again)
+                    return
+                }
                 d.close(); device = null; session = null
                 val smaller = fallbackSize()
                 if (smaller != null && !isRecording) {
@@ -739,13 +765,109 @@ class CameraPipeline(
             }
         }
         try {
-            d.createCaptureSession(SessionConfiguration(SessionConfiguration.SESSION_REGULAR,
-                listOf(OutputConfiguration(surface)), exec, cb))
+            // Stop the old session's frames and free our GL surface for its next producer.
+            try { session?.stopRepeating() } catch (_: Exception) {}
+            val oldRelay = relay; relay = null
+            oldRelay?.detach()
+            retired += listOfNotNull(oldRelay)
+
+            val electronic = stabilization == "electronic" && hasEis && !stabRefused
+            val outputs = ArrayList<OutputConfiguration>()
+            val r = if (electronic && videoRoute) try { Relay() } catch (e: Exception) {
+                EventLog.log("Cam", "${role.label}: can't set up the video stream (${e.message}) — continuing without stabilization")
+                stabRefused = true
+                null
+            } else null
+            if (r != null) {
+                relay = r
+                outputs += OutputConfiguration(r.viewfinder.surface)
+                outputs += OutputConfiguration(r.video.surface).apply {
+                    // A "video encoder" output gets recorder-style timestamps by default; we need the sensor's.
+                    if (Build.VERSION.SDK_INT >= 33) timestampBase = OutputConfiguration.TIMESTAMP_BASE_SENSOR
+                }
+                requestTargets = listOf(r.video.surface)
+            } else {
+                outputs += OutputConfiguration(surface)
+                requestTargets = listOf(surface)
+            }
+            val config = SessionConfiguration(SessionConfiguration.SESSION_REGULAR, outputs, exec, cb)
+            // Stabilization (and frame rate) are "session keys" on many phones: they only take
+            // effect if they are already part of the session's set-up.
+            val params = d.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
+            fpsRange?.let { params.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
+            applyStabilization(params, if (stabRefused) "default" else stabilization)
+            vendorVideoMode = r != null && setVendorVideoMode(params)
+            config.sessionParameters = params.build()
+            d.createCaptureSession(config)
         } catch (e: Exception) {
             Log.e(TAG, "createCaptureSession", e)
             listener.onCameraLost(this, e.message ?: "session failed", Loss.OTHER)
         }
     }
+
+    // ---------------------------------------------------------------- stabilization via the video stream
+
+    /**
+     * Many phones stabilize only the stream that goes to a video encoder, not the viewfinder stream,
+     * and our GL surface looks like a viewfinder to them. So for electronic stabilization the camera
+     * records into a "video encoder" buffer queue and each frame is handed on, untouched and without
+     * copying, to the GL surface. The camera also wants a viewfinder output to exist; it gets no frames.
+     */
+    private inner class Relay {
+        val video: android.media.ImageReader = android.media.ImageReader.newInstance(size.width, size.height,
+            android.graphics.ImageFormat.PRIVATE, 6,
+            android.hardware.HardwareBuffer.USAGE_VIDEO_ENCODE or android.hardware.HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE)
+        val viewfinder: android.media.ImageReader = android.media.ImageReader.newInstance(size.width, size.height,
+            android.graphics.ImageFormat.PRIVATE, 2, android.hardware.HardwareBuffer.USAGE_GPU_SAMPLED_IMAGE)
+        private var writer: android.media.ImageWriter? = null
+        private var failures = 0
+
+        /**
+         * Start handing frames to the GL surface. Only once the session is configured: until then
+         * the previous session's camera stream may still be connected to that surface.
+         */
+        fun attach(target: Surface) {
+            writer = android.media.ImageWriter.newInstance(target, 6, android.graphics.ImageFormat.PRIVATE)
+        }
+
+        init {
+            video.setOnImageAvailableListener({ r ->
+                val img = try { r.acquireNextImage() } catch (_: Exception) { null } ?: return@setOnImageAvailableListener
+                val w = writer
+                if (w == null) { img.close(); return@setOnImageAvailableListener }
+                try { w.queueInputImage(img); failures = 0 } catch (e: Exception) {
+                    runCatching { img.close() }
+                    if (++failures == 30 && relay === this && !released) {
+                        EventLog.log("Cam", "${role.label}: stabilized frames can't be passed on (${e.message}) — continuing without")
+                        stabRefused = true
+                        device?.let { createSession(it, again = true) }
+                    }
+                }
+            }, cam)
+            viewfinder.setOnImageAvailableListener({ r -> runCatching { r.acquireLatestImage()?.close() } }, cam)
+        }
+
+        /** Let go of the GL surface (frames still arriving are dropped). */
+        fun detach() { runCatching { writer?.close() }; writer = null }
+        fun close() { detach(); runCatching { video.close() }; runCatching { viewfinder.close() } }
+    }
+
+    private var relay: Relay? = null
+    /** Relays of earlier sessions: closed once the new session is up (the old one may still write to them). */
+    private val retired = ArrayList<Relay>()
+    private var requestTargets: List<Surface> = emptyList()
+    private var vendorVideoMode = false
+    /** This camera only stabilizes its video stream (found out once, then remembered). */
+    private var videoRoute = prefs.getBoolean("stab_video_route_$cameraId", false)
+
+    /**
+     * Motorola phones keep their stabilizer for their own camera app's video mode; this is the
+     * switch that app sets. Returns false on phones that don't have it.
+     */
+    private fun setVendorVideoMode(b: CaptureRequest.Builder): Boolean = try {
+        b.set(CaptureRequest.Key("com.lenovo.moto.clientapp.is_motcamera2", Byte::class.javaObjectType), 1.toByte())
+        true
+    } catch (_: Exception) { false }
 
     private fun resizeBuffers(s: Size) {
         size = s
@@ -758,7 +880,7 @@ class CameraPipeline(
         val target = camSurface ?: return
         try {
             val b = d.createCaptureRequest(CameraDevice.TEMPLATE_RECORD)
-            b.addTarget(target)
+            requestTargets.ifEmpty { listOf(target) }.forEach { b.addTarget(it) }
             b.set(CaptureRequest.CONTROL_MODE, CaptureRequest.CONTROL_MODE_AUTO)
             fpsRange?.let { b.set(CaptureRequest.CONTROL_AE_TARGET_FPS_RANGE, it) }
             if (zoomRatio != null && Build.VERSION.SDK_INT >= 30) b.set(CaptureRequest.CONTROL_ZOOM_RATIO, zoomRatio)
@@ -783,8 +905,12 @@ class CameraPipeline(
                     "auto"
                 }
             }
-            val want = stabilization
-            stabStatus = applyStabilization(b, want)
+            val want = if (stabRefused) "default" else stabilization
+            stabStatus = if (stabRefused) "stabilization not available in this setup" else applyStabilization(b, want)
+            if (want == "electronic" && relay != null && vendorVideoMode) {
+                setVendorVideoMode(b); stabStatus = "electronic stabilization (video mode)"
+            }
+            if (stabRefused) applyStabilization(b, "default")
             try {
                 s.setRepeatingRequest(b.build(), if (want == "electronic" && hasEis) stabCheck() else null, cam)
             } catch (e: IllegalArgumentException) {
@@ -823,11 +949,24 @@ class CameraPipeline(
         override fun onCaptureCompleted(s: CameraCaptureSession, r: CaptureRequest, result: android.hardware.camera2.TotalCaptureResult) {
             if (checked) return
             checked = true
+            if (stabilization != "electronic" || s !== session) return
             val on = result.get(android.hardware.camera2.CaptureResult.CONTROL_VIDEO_STABILIZATION_MODE) ==
                 CaptureRequest.CONTROL_VIDEO_STABILIZATION_MODE_ON
-            if (!on && stabilization == "electronic") {
-                stabStatus = "electronic stabilization refused by the phone"
-                EventLog.log("Cam", "${role.label}: $stabStatus")
+            when {
+                on -> {}
+                !videoRoute -> {
+                    // Not applied to our viewfinder-style stream: try again through the video stream.
+                    EventLog.log("Cam", "${role.label}: stabilization not applied directly — switching to the video stream")
+                    videoRoute = true
+                    prefs.edit().putBoolean("stab_video_route_$cameraId", true).apply()
+                    device?.let { createSession(it, again = true) }
+                }
+                // Motorola's video mode stabilizes but doesn't report it in the frame data.
+                vendorVideoMode -> { stabStatus = "electronic stabilization (video mode)" }
+                else -> {
+                    stabStatus = "electronic stabilization asked for, but the phone doesn't confirm it"
+                    EventLog.log("Cam", "${role.label}: $stabStatus")
+                }
             }
         }
     }
@@ -886,6 +1025,8 @@ class CameraPipeline(
         if (cam.post {
                 try { session?.close() } catch (_: Exception) {}
                 try { device?.close() } catch (_: Exception) {}
+                relay?.close(); relay = null
+                retired.forEach { it.close() }; retired.clear()
                 session = null; device = null; cameraOpen = false
                 camDone.countDown()
             }) camDone.await(2, TimeUnit.SECONDS)
