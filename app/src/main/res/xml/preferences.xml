@@ -131,7 +131,7 @@
             app:entries="@array/alt_unit_labels" app:entryValues="@array/alt_unit_values"
             app:defaultValue="ft" app:useSimpleSummaryProvider="true" />
         <SwitchPreferenceCompat app:key="stamp_accel" app:title="Acceleration bar"
-            app:summary="Green bar rising while speeding up, red bar dropping while braking, at the right edge of the stamp (full bar = 0.6 g)"
+            app:summary="Above the stamp, on the right: a green bar rising while speeding up, a red bar dropping while braking, and the value in g (full bar = 0.6 g)"
             app:defaultValue="true" />
         <SwitchPreferenceCompat app:key="stamp_sats" app:title="Satellite count"
             app:defaultValue="true" />

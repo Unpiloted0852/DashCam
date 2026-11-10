@@ -33,6 +33,22 @@ class FrameDrawer {
         GLES20.glDisable(GLES20.GL_BLEND)
     }
 
+    private val quadPos = floats(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
+    private val quadUv = floats(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
+
+    /**
+     * Draws part of a 2D texture ([u0],[v0] top-left to [u1],[v1] bottom-right of the bitmap it was
+     * made from) into a rectangle given in NDC. For text glyphs.
+     */
+    fun drawTex(tex: Int, x0: Float, y0: Float, x1: Float, y1: Float, u0: Float, v0: Float, u1: Float, v1: Float) {
+        quadPos.position(0); quadPos.put(x0).put(y0).put(x1).put(y0).put(x0).put(y1).put(x1).put(y1)
+        quadUv.position(0); quadUv.put(u0).put(v1).put(u1).put(v1).put(u0).put(v0).put(u1).put(v0)
+        GLES20.glEnable(GLES20.GL_BLEND)
+        GLES20.glBlendFunc(GLES20.GL_ONE, GLES20.GL_ONE_MINUS_SRC_ALPHA) // bitmap is premultiplied
+        draw(texProg, GLES20.GL_TEXTURE_2D, tex, quadPos, quadUv, identity, identity)
+        GLES20.glDisable(GLES20.GL_BLEND)
+    }
+
     private val colorProg = program(VS_COLOR, FS_COLOR)
     private val rect = floats(0f, 0f, 0f, 0f, 0f, 0f, 0f, 0f)
 
