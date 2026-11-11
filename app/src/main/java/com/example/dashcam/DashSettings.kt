@@ -23,6 +23,11 @@ class DashSettings(ctx: Context) {
     private val bitsPerPixel: Float get() = str("quality", "0.15").toFloat()
     val audioEnabled: Boolean get() = bool("audio_enabled", true)
 
+    /** Main phone with a remote camera: big Backup Cam button when slow or stopped. */
+    val backupButton: Boolean get() = bool("backup_button", true)
+    /** Backup Cam view goes back to normal above this speed (km/h); 0 = stays until closed. */
+    val backupReturnKmh: Int get() = str("backup_return_kmh", "15").toIntOrNull() ?: 15
+
     /** default / electronic / optical / off, per camera. */
     val mainStabilization: String get() = str("main_stabilization", "default")
     val cabinStabilization: String get() = str("cabin_stabilization", "default")
@@ -111,6 +116,8 @@ class DashSettings(ctx: Context) {
         tempUnit = str("stamp_temp_unit", "both"),
         textSize = stampTextSize(str("stamp_size", "normal")),
         showAccel = bool("stamp_accel", true),
+        accelHalfEm = when (str("accel_height", "normal")) { "tall" -> 4.5f; "very_tall" -> 8f; else -> 2.2f },
+        accelExpanded = str("accel_scale", "expanded") != "linear",
     )
 
     /** Text height as a fraction of the frame's short side; kept small so the video stays clear. */
@@ -146,7 +153,7 @@ class DashSettings(ctx: Context) {
         val MIRRORED_KEYS = setOf("segment_minutes", "quality", "audio_enabled", "impact_sensitivity",
             "auto_stop_walk", "auto_stop_unplug", "auto_stop_minutes",
             "stamp_size", "stamp_clock", "use_utc", "overlay_label", "show_coords", "stamp_accuracy", "stamp_place",
-            "stamp_speed", "stamp_heading", "stamp_altitude", "stamp_alt_unit", "stamp_sats", "stamp_accel", "stamp_weather",
+            "stamp_speed", "stamp_heading", "stamp_altitude", "stamp_alt_unit", "stamp_sats", "stamp_accel", "accel_height", "accel_scale", "stamp_weather",
             "stamp_weather_fields", "stamp_temp_unit", "stamp_zone")
     }
 }
@@ -190,4 +197,8 @@ data class OverlayOptions(
     val textSize: Float = 0.044f,
     /** Green/red bar for speeding up / braking at the right edge of the stamp. */
     val showAccel: Boolean = false,
+    /** Height of each half of the bar, in text lines. */
+    val accelHalfEm: Float = 2.2f,
+    /** Square-root scale (detail near zero) instead of linear. */
+    val accelExpanded: Boolean = true,
 )

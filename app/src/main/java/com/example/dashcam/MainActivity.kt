@@ -147,6 +147,7 @@ class MainActivity : AppCompatActivity() {
         liveTexture = findViewById(R.id.liveTexture)
         liveStatusText = findViewById(R.id.liveStatus)
         findViewById<Button>(R.id.liveBtn).setOnClickListener { openLive() }
+        findViewById<Button>(R.id.backupBtn).setOnClickListener { openLive(backup = true) }
         linkStatus.setOnClickListener { if (settings.isPrimary) openLive() }
         findViewById<Button>(R.id.liveCloseBtn).setOnClickListener { closeLive() }
         findViewById<Button>(R.id.liveMirrorBtn).setOnClickListener {
@@ -171,7 +172,11 @@ class MainActivity : AppCompatActivity() {
         liveStatusText.visibility = if (t.isEmpty()) View.GONE else View.VISIBLE
     }
 
-    private fun openLive() {
+    /** The live view was opened with the Backup Cam button (so it may close itself when driving off). */
+    private var liveForBackup = false
+    private var fastSince = 0L
+
+    private fun openLive(backup: Boolean = false) {
         val s = service ?: return
         if (!s.linkConnected) { Toast.makeText(this, "The remote camera isn't connected", Toast.LENGTH_SHORT).show(); return }
         LiveLink.problem(this)?.let { p ->
@@ -181,6 +186,9 @@ class MainActivity : AppCompatActivity() {
             return
         }
         liveOpen = true
+        liveForBackup = backup
+        fastSince = 0L
+        findViewById<TextView>(R.id.liveLabel).text = if (backup) "BACKUP CAM · LIVE" else "REMOTE CAMERA · LIVE"
         liveBack.isEnabled = true
         liveBox.visibility = View.VISIBLE
         liveW = 0; liveH = 0
@@ -400,6 +408,11 @@ class MainActivity : AppCompatActivity() {
         override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
     }
 
+    private companion object {
+        /** The Backup Cam button shows at or below this speed. */
+        const val BACKUP_SHOW_KMH = 10f
+    }
+
     private val tick = object : Runnable {
         override fun run() {
             renderLive()
@@ -407,9 +420,28 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /**
+     * Backup Cam: the big button shows while a remote camera is connected and the car is slow or
+     * stopped; a view opened with it goes back to normal once the car drives off above the chosen speed.
+     */
+    private fun updateBackupCam(mps: Float?) {
+        val btn = findViewById<Button>(R.id.backupBtn)
+        val kmh = mps?.let { Telemetry.kph(it) }
+        val show = settings.backupButton && service?.remoteCamReady == true && !liveOpen &&
+            (kmh == null || kmh <= BACKUP_SHOW_KMH)
+        btn.visibility = if (show) View.VISIBLE else View.GONE
+        val limit = settings.backupReturnKmh
+        if (liveOpen && liveForBackup && limit > 0 && kmh != null && kmh > limit) {
+            val now = SystemClock.elapsedRealtime()
+            if (fastSince == 0L) fastSince = now
+            else if (now - fastSince >= 1500) closeLive()   // held above the limit: not just GPS noise
+        } else fastSince = 0L
+    }
+
     /** Things that change continuously: speed, GPS, record timer. */
     private fun renderLive() {
         val mps = Telemetry.speedMps()
+        updateBackupCam(mps)
         val mphText = if (mps != null) "${Telemetry.mph(mps).roundToInt()} mph" else "-- mph"
         val kphText = if (mps != null) "${Telemetry.kph(mps).roundToInt()} km/h" else "-- km/h"
         when (settings.speedUnit) {

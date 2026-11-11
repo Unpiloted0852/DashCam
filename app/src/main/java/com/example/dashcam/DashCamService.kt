@@ -858,6 +858,13 @@ class DashCamService : Service(), CameraPipeline.Listener,
 
     val linkConnected: Boolean get() = link?.connected == true
 
+    /** Main phone: a remote camera is connected, reporting in and its camera works (for the Backup Cam button). */
+    val remoteCamReady: Boolean get() {
+        if (!settings.isPrimary || link?.connected != true) return false
+        val p = peerStatus?.takeIf { SystemClock.elapsedRealtime() - peerStatusAt < 10_000 } ?: return false
+        return p.optString("cam") != "down"
+    }
+
     private fun notifyLive() = ui.post { liveListener?.invoke() }
 
     /** Main phone: got the remote's group details: join it in the background (once per group). */

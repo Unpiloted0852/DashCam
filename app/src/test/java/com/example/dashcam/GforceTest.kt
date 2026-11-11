@@ -66,4 +66,19 @@ class GforceTest {
     @Test fun fallsBackToGpsWhenThePhoneLiesFlat() {
         assertEquals(1.5f, run(8f, sensor = { null }, speed = { t -> 1.5f * t }), 0.2f)
     }
+
+    @Test fun expandedScaleShowsGentleDriving() {
+        val f = { g: Float, e: Boolean -> OverlayTexture.accelFraction(g, e) }
+        // Gentle driving gets several times more room than on the linear scale.
+        assertTrue(f(0.05f, true) > 2.5f * f(0.05f, false))
+        assertEquals(0.316f, f(0.1f, true), 0.01f)
+        // Still ordered, symmetric, and a hard stop (1 g) exactly fills the bar.
+        assertTrue(f(0.3f, true) > f(0.1f, true) && f(0.5f, true) > f(0.3f, true))
+        assertEquals(-f(0.4f, true), f(-0.4f, true), 1e-6f)
+        assertEquals(-1f, f(-1f, true), 1e-6f)
+        assertEquals(1f, f(2f, true), 1e-6f)
+        assertEquals(0f, f(0f, true), 1e-6f)
+        // Linear: full at 0.6 g, as before.
+        assertEquals(0.5f, f(0.3f, false), 1e-6f)
+    }
 }

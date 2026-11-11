@@ -94,6 +94,24 @@
             android:textSize="20sp" />
     </LinearLayout>
 
+    <!-- Big, easy target while parking: shows the remote (rear-window) camera full screen. -->
+    <androidx.appcompat.widget.AppCompatButton
+        android:id="@+id/backupBtn"
+        android:layout_width="wrap_content"
+        android:layout_height="84dp"
+        android:layout_gravity="center_vertical|start"
+        android:layout_marginStart="16dp"
+        android:minWidth="200dp"
+        android:paddingStart="20dp"
+        android:paddingEnd="20dp"
+        android:background="@drawable/backup_bg"
+        android:text="◀ BACKUP CAM"
+        android:textAllCaps="false"
+        android:textColor="@android:color/black"
+        android:textSize="22sp"
+        android:textStyle="bold"
+        android:visibility="gone" />
+
     <LinearLayout
         android:id="@+id/controls"
         android:layout_width="wrap_content"

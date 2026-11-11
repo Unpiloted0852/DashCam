@@ -158,17 +158,24 @@ class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: Frame
         val barW = lineH * ACCEL_W_EM
         val x1 = right; val x0 = x1 - barW
         val bottom = textBottom + a.cellH + lineH * 0.15f
-        val half = lineH * ACCEL_HALF_EM
+        // Each half is [accelHalfEm] lines tall, but never reaches past 90 % of the frame.
+        val half = minOf(lineH * o.accelHalfEm, (frameH * 0.9f - bottom) / 2)
         val mid = bottom + half; val top = mid + half
         val edge = max(1f, lineH * 0.04f)
         drawer.drawRect(x(x0 - edge), y(bottom - edge), x(x1 + edge), y(top + edge), 0x66000000)   // outline
         drawer.drawRect(x(x0), y(bottom), x(x1), y(top), 0x55FFFFFF)                                // track
         if (g != null) {
-            val h = (g / ACCEL_FULL_G).coerceIn(-1f, 1f) * half
+            val h = accelFraction(g, o.accelExpanded) * half
             if (h > 0) drawer.drawRect(x(x0), y(mid), x(x1), y(mid + h), 0xFF2ECC40.toInt())        // speeding up
             else if (h < 0) drawer.drawRect(x(x0), y(mid + h), x(x1), y(mid), 0xFFFF3B30.toInt())   // braking
         }
-        drawer.drawRect(x(x0 - barW * 0.35f), y(mid - edge), x(x1), y(mid + edge), 0xFFFFFFFF.toInt())   // zero line
+        // Tick marks on the left edge (both directions), so the scale can be read.
+        for (t in ACCEL_TICKS) {
+            val dy = accelFraction(t, o.accelExpanded) * half
+            for (yy in floatArrayOf(mid + dy, mid - dy))
+                drawer.drawRect(x(x0 - barW * 0.25f), y(yy - edge * 0.6f), x(x0 + barW * 0.3f), y(yy + edge * 0.6f), 0xCCFFFFFF.toInt())
+        }
+        drawer.drawRect(x(x0 - barW * 0.45f), y(mid - edge), x(x1), y(mid + edge), 0xFFFFFFFF.toInt())   // zero line
     }
 
     private var accelText = ""
@@ -217,8 +224,20 @@ class OverlayTexture(val frameW: Int, val frameH: Int, private val drawer: Frame
         /** Acceleration bar, in line heights: width, and the height of each half (up = speeding up). */
         const val ACCEL_W_EM = 0.7f
         const val ACCEL_HALF_EM = 2.2f
-        /** The acceleration that fills half the bar. */
+        /** The acceleration that fills half the bar: linear scale, and expanded scale (up to a hard stop). */
         const val ACCEL_FULL_G = 0.6f
+        const val ACCEL_FULL_G_EXPANDED = 1.0f
+        /** Tick marks, in g. */
+        val ACCEL_TICKS = floatArrayOf(0.1f, 0.3f, 0.5f)
+
+        /**
+         * How far the bar reaches for [g], as a signed fraction of half its height. The expanded
+         * scale is a square root: small accelerations get far more room (0.05 g fills 22 % instead
+         * of 8 %), large ones are compressed so a hard stop (1 g) still fits.
+         */
+        fun accelFraction(g: Float, expanded: Boolean): Float =
+            if (expanded) Math.signum(g) * kotlin.math.sqrt((kotlin.math.abs(g) / ACCEL_FULL_G_EXPANDED).coerceAtMost(1f))
+            else (g / ACCEL_FULL_G).coerceIn(-1f, 1f)
         /** Characters the g readout can show (U+2212 is the minus sign). */
         const val GLYPHS = "0123456789.+\u2212g "
 

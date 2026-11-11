@@ -60,4 +60,36 @@
         <item>optical</item>
         <item>off</item>
     </string-array>
+    <string-array name="accel_height_labels">
+        <item>Normal</item>
+        <item>Tall — for precise reading</item>
+        <item>Very tall</item>
+    </string-array>
+    <string-array name="accel_height_values">
+        <item>normal</item>
+        <item>tall</item>
+        <item>very_tall</item>
+    </string-array>
+    <string-array name="accel_scale_labels">
+        <item>Detailed near zero — gentle driving shows clearly, full bar = 1 g</item>
+        <item>Linear — full bar = 0.6 g</item>
+    </string-array>
+    <string-array name="accel_scale_values">
+        <item>expanded</item>
+        <item>linear</item>
+    </string-array>
+    <string-array name="backup_return_labels">
+        <item>Never — stay until closed</item>
+        <item>10 km/h (6 mph)</item>
+        <item>15 km/h (9 mph)</item>
+        <item>20 km/h (12 mph)</item>
+        <item>30 km/h (19 mph)</item>
+    </string-array>
+    <string-array name="backup_return_values">
+        <item>0</item>
+        <item>10</item>
+        <item>15</item>
+        <item>20</item>
+        <item>30</item>
+    </string-array>
 </resources>

@@ -10,6 +10,13 @@
         <ListPreference app:key="remote_camera" app:title="Camera to record (remote camera)"
             app:entries="@array/remote_camera_labels" app:entryValues="@array/remote_camera_values"
             app:defaultValue="back" app:useSimpleSummaryProvider="true" />
+        <SwitchPreferenceCompat app:key="backup_button" app:title="Backup Cam button"
+            app:summary="On the main phone: a big button showing the remote camera full screen, while stopped or below 10 km/h (6 mph)"
+            app:defaultValue="true" />
+        <ListPreference app:key="backup_return_kmh" app:title="Leave Backup Cam view when driving above"
+            app:dependency="backup_button"
+            app:entries="@array/backup_return_labels" app:entryValues="@array/backup_return_values"
+            app:defaultValue="15" app:useSimpleSummaryProvider="true" />
         <Preference app:key="link_help" app:selectable="false" app:title="How it works"
             app:summary="Pair the two phones once in Android's Bluetooth settings, then pick each other here. Both phones record their own clips (nothing is lost if the link drops); the main phone starts and stops the remote, locks clips on both, and gives it the time, GPS and weather for its stamp. Open DashCam once on the remote after switching it on; it can then sit with the screen off." />
     </PreferenceCategory>
@@ -131,8 +138,16 @@
             app:entries="@array/alt_unit_labels" app:entryValues="@array/alt_unit_values"
             app:defaultValue="ft" app:useSimpleSummaryProvider="true" />
         <SwitchPreferenceCompat app:key="stamp_accel" app:title="Acceleration bar"
-            app:summary="Above the stamp, on the right: a green bar rising while speeding up, a red bar dropping while braking, and the value in g (full bar = 0.6 g)"
+            app:summary="Above the stamp, on the right: a green bar rising while speeding up, a red bar dropping while braking, and the value in g"
             app:defaultValue="true" />
+        <ListPreference app:key="accel_height" app:title="Acceleration bar height"
+            app:dependency="stamp_accel"
+            app:entries="@array/accel_height_labels" app:entryValues="@array/accel_height_values"
+            app:defaultValue="normal" app:useSimpleSummaryProvider="true" />
+        <ListPreference app:key="accel_scale" app:title="Acceleration bar scale"
+            app:dependency="stamp_accel"
+            app:entries="@array/accel_scale_labels" app:entryValues="@array/accel_scale_values"
+            app:defaultValue="expanded" app:useSimpleSummaryProvider="true" />
         <SwitchPreferenceCompat app:key="stamp_sats" app:title="Satellite count"
             app:defaultValue="true" />
         <SwitchPreferenceCompat app:key="stamp_weather" app:title="Weather line"
