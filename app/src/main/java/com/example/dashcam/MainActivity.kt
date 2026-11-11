@@ -246,8 +246,7 @@ class MainActivity : AppCompatActivity() {
     override fun onStart() {
         super.onStart()
         applyOrientationLayout()   // stamp options may have changed in Settings
-        if (settings.keepScreenOn) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
-        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        applyKeepScreenOn()
         // "Start recording when the app opens": every time the app comes to the front,
         // except when just coming back from our own settings screen.
         if (settings.autoRecord && !inOwnScreen) autoRecordPending = true
@@ -255,6 +254,18 @@ class MainActivity : AppCompatActivity() {
         if (hasPerm(Manifest.permission.CAMERA)) startAndBind()
         ticker.post(tick)
         getSystemService(DisplayManager::class.java).registerDisplayListener(displayListener, ticker)
+    }
+
+    /** Keep the screen on as set, except on a resting remote camera: there it may go dark to save power. */
+    private fun applyKeepScreenOn() {
+        val on = settings.keepScreenOn && service?.isIdle != true
+        if (on) window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        else window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+    }
+
+    override fun onUserInteraction() {
+        super.onUserInteraction()
+        service?.userActive()   // remote camera: a touch wakes the cameras
     }
 
     override fun onWindowFocusChanged(hasFocus: Boolean) {
@@ -445,6 +456,10 @@ class MainActivity : AppCompatActivity() {
     /** Things that change on service events. */
     private fun render() {
         val s = service
+        applyKeepScreenOn()
+        // A resting remote camera's preview would show its last frame frozen: hide it.
+        val previewAlpha = if (s?.isIdle == true) 0f else 1f
+        mainPreview.alpha = previewAlpha; cabinPreview.alpha = previewAlpha
         val rec = s?.recording == true
         // Recording follows the phone's orientation (a turn starts a new clip), so never lock it.
         requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_USER
@@ -459,7 +474,11 @@ class MainActivity : AppCompatActivity() {
             else -> if (settings.mainFocus.far) "Focus ∞" else "Focus auto"
         }
         if (!rec) {
-            recStatus.text = if (s?.stopping == true) "Saving…" else "STANDBY"
+            recStatus.text = when {
+                s?.stopping == true -> "Saving…"
+                s?.isIdle == true -> "RESTING — camera off until the main phone connects (tap to wake)"
+                else -> "STANDBY"
+            }
             recStatus.setTextColor(0xFFFFFFFF.toInt())
         }
         cabinPreview.visibility = if (s?.cabinCam != null) View.VISIBLE else View.INVISIBLE

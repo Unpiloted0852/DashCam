@@ -146,9 +146,10 @@ class RemoteLink(
             closeSocket()
             if (!running) break
             if (state.phase != Phase.MISMATCH) setState(State(if (primary) Phase.CONNECTING else Phase.WAITING, "", name))
-            // A version mismatch won't fix itself: retry slowly. Otherwise back off up to 15 s.
+            // A version mismatch won't fix itself: retry slowly. Otherwise back off up to 6 s, so
+            // getting into the car is noticed within seconds (a try to an absent phone costs little).
             pause(if (mismatch) 60_000 else backoff)
-            backoff = (backoff * 2).coerceAtMost(15_000)
+            backoff = (backoff * 2).coerceAtMost(6_000)
         }
     }
 

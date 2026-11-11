@@ -138,8 +138,8 @@ class DashCamService : Service(), CameraPipeline.Listener,
         return START_NOT_STICKY
     }
 
-    override fun onBind(intent: Intent?): IBinder { bound = true; exitIdle(); return binder }
-    override fun onRebind(intent: Intent?) { bound = true; exitIdle() }
+    override fun onBind(intent: Intent?): IBinder { bound = true; userActive(); exitIdle(); return binder }
+    override fun onRebind(intent: Intent?) { bound = true; userActive(); exitIdle() }
     override fun onUnbind(intent: Intent?): Boolean {
         bound = false
         previewMain = null; previewCabin = null
@@ -471,6 +471,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
                 releaseWakeLock()
                 goForeground()
                 if (!bound && settings.isRemote) { pendingRestart = false; enterIdle(); changed(); return@post }
+                if (settings.isRemote) scheduleIdleCheck()
                 if (!bound) { stopSelf(); return@post }
                 if (pendingRestart) { pendingRestart = false; restartCameras() }
                 changed()
@@ -664,6 +665,8 @@ class DashCamService : Service(), CameraPipeline.Listener,
                     sendState()
                 } else {
                     lastTimeSync = 0L   // sync the clock right away
+                    // The main phone is here: cameras and GPS on, ready to record at once.
+                    ui.post { if (idle) EventLog.log("Link", "main phone connected — waking up"); exitIdle(); scheduleIdleCheck() }
                     sendStatus()
                     ui.post { verifyLiveGroup() }
                 }
@@ -671,6 +674,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
             if (state.phase != RemoteLink.Phase.CONNECTED) {
                 peerStatus = null
                 ui.post { if (settings.isRemote) stopLiveVideo("Bluetooth link lost") else leaveLive() }
+                if (was == RemoteLink.Phase.CONNECTED && settings.isRemote) ui.post { linkLostAt = now0(); scheduleIdleCheck() }
             }
             if (was == RemoteLink.Phase.CONNECTED && state.phase != RemoteLink.Phase.CONNECTED && settings.isRemote && recording) {
                 EventLog.log("Link", "main phone gone — still recording; own end-of-drive detection takes over")
@@ -1046,13 +1050,53 @@ class DashCamService : Service(), CameraPipeline.Listener,
         if (settings.isRemote) closeLiveGroup(why) else leaveLive()
     }
 
+    /** When the main phone's link last dropped, and until when someone using this phone keeps it awake. */
+    private var linkLostAt = 0L
+    private var awakeUntil = 0L
+
+    /**
+     * Remote camera with the app open on screen: still idle (camera, GPS off; the screen may sleep)
+     * while the main phone isn't connected and nothing is recording, after a grace period — the
+     * car's USB port may stay powered with the car off. The Bluetooth link keeps listening, and the
+     * moment the main phone connects the cameras come back.
+     */
+    private fun idleWanted(): Boolean {
+        if (!settings.isRemote || recording || stopping || liveVideo) return false
+        if (link?.connected == true) return false
+        val now = now0()
+        return now >= awakeUntil && now - linkLostAt >= LINK_GRACE_MS
+    }
+
+    private val idleCheck = Runnable { if (idleWanted()) { EventLog.log("Link", "main phone away — idling to save power"); enterIdle() } }
+
+    private fun scheduleIdleCheck() {
+        ui.removeCallbacks(idleCheck)
+        if (!settings.isRemote) return
+        val now = now0()
+        val at = maxOf(awakeUntil, linkLostAt + LINK_GRACE_MS, now + 1000)
+        ui.postDelayed(idleCheck, at - now)
+    }
+
+    /** Someone is using this phone (app opened, screen touched): keep the cameras on for a while. */
+    fun userActive() {
+        if (!settings.isRemote) return
+        awakeUntil = now0() + USER_AWAKE_MS
+        exitIdle()
+        scheduleIdleCheck()
+    }
+
+    /** Remote camera resting until the main phone connects (cameras, GPS off). */
+    val isIdle: Boolean get() = idle
+
     private fun enterIdle() {
         if (idle || recording || stopping || liveVideo) return
         idle = true
+        ui.removeCallbacks(idleCheck)
         EventLog.log("Link", "remote camera idle: cameras and GPS off, waiting for the main phone")
         stopCameras()
         Telemetry.stop()
         updateNotification()
+        changed()
     }
 
     private fun exitIdle() {
@@ -1061,6 +1105,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         Telemetry.start(this)
         startCameras()
         updateNotification()
+        changed()
     }
 
     private fun updateNotification() {
@@ -1134,6 +1179,10 @@ class DashCamService : Service(), CameraPipeline.Listener,
         private const val TAG = "DashCamService"
         private const val CHANNEL = "recording"
         private const val NOTIF_ID = 1
+        /** Remote camera: stay ready this long after the main phone's link drops (brief dropouts, parking). */
+        private const val LINK_GRACE_MS = 2 * 60_000L
+        /** Remote camera: stay awake this long after the app is opened or the screen touched. */
+        private const val USER_AWAKE_MS = 3 * 60_000L
         private const val NOTIF_AUTOSTOP = 2
         const val ACTION_STOP = "com.example.dashcam.STOP"
         const val ACTION_LOCK = "com.example.dashcam.LOCK"
