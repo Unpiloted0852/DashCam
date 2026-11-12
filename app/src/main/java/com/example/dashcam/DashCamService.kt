@@ -839,6 +839,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
     private var liveCreds: JSONObject? = null
     /** Remote: the main phone is watching, so the live encoder (and camera) run. */
     private var liveVideo = false
+    private var liveWifiFast: WifiFast? = null
     @Volatile private var liveAskedAt = 0L
     private var liveGroupRetryAt = 0L
     private fun now0() = SystemClock.elapsedRealtime()
@@ -1003,6 +1004,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         if (liveVideo) return
         val srv = liveServer ?: return
         liveVideo = true
+        (liveWifiFast ?: WifiFast(this, "DashCam:live-feed").also { liveWifiFast = it }).acquire()
         EventLog.log("Live", "main phone is watching: starting the live feed")
         exitIdle()
         mainCam?.let { c -> worker.execute { c.startLive(srv) } }
@@ -1013,6 +1015,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
     private fun stopLiveVideo(why: String) {
         if (!liveVideo) return
         liveVideo = false
+        liveWifiFast?.release()
         EventLog.log("Live", "live feed off ($why)")
         mainCam?.let { c -> worker.execute { c.stopLive() } }
         if (!bound && !recording && !stopping && settings.isRemote) enterIdle()

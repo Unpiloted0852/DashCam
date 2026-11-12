@@ -59,6 +59,8 @@ object LiveLink {
     const val KIND_FORMAT = 0   // payload: int32 width, int32 height
     const val KIND_CONFIG = 1   // SPS/PPS
     const val KIND_FRAME = 2
+    /** Frames waiting longer than this on the sending side are dropped. */
+    const val MAX_QUEUE_LAG_MS = 120L
 }
 
 /** Channel (MHz) of the Wi‑Fi network this phone is connected to, or 0. */
@@ -183,7 +185,10 @@ class WifiDirect(ctx: Context) {
 
 /** Remote camera: serves the live H.264 feed to the main phone (one viewer at a time). */
 class LiveServer(val token: String, private val onKeyFrameWanted: () -> Unit) : CameraPipeline.LiveSink {
-    private class Pkt(val kind: Int, val key: Boolean, val pts: Long, val data: ByteArray)
+    private class Pkt(val kind: Int, val key: Boolean, val pts: Long, val data: ByteArray) {
+        val at = SystemClock.elapsedRealtime()
+    }
+    private var lastDropAt = 0L
 
     @Volatile private var running = true
     @Volatile private var client: Socket? = null
@@ -213,7 +218,9 @@ class LiveServer(val token: String, private val onKeyFrameWanted: () -> Unit) : 
             } catch (_: Exception) { false }
             if (!ok) { EventLog.log("Live", "refused viewer ${s.inetAddress?.hostAddress}"); try { s.close() } catch (_: Exception) {}; continue }
             client?.let { try { it.close() } catch (_: Exception) {} }
-            s.tcpNoDelay = true; s.soTimeout = 0; s.sendBufferSize = 256 * 1024
+            // A small send buffer: when the link can't keep up, frames must pile up in our queue
+            // (where stale ones are thrown away), not out of sight inside the socket.
+            s.tcpNoDelay = true; s.soTimeout = 0; s.sendBufferSize = 48 * 1024
             client = s
             lastClientAt = SystemClock.elapsedRealtime()
             EventLog.log("Live", "viewer connected")
@@ -224,7 +231,7 @@ class LiveServer(val token: String, private val onKeyFrameWanted: () -> Unit) : 
     private fun sendLoop(s: Socket) {
         queue.clear(); dropping = true
         try {
-            val out = DataOutputStream(s.getOutputStream().buffered(64 * 1024))
+            val out = DataOutputStream(s.getOutputStream().buffered(32 * 1024))
             format?.let { write(out, it) }
             config?.let { write(out, it) }
             out.flush()
@@ -262,11 +269,22 @@ class LiveServer(val token: String, private val onKeyFrameWanted: () -> Unit) : 
             return
         }
         if (client == null) return
-        // Viewer falling behind (weak link): drop everything until the next key frame rather than lag.
-        if (queue.size > 20) { queue.removeIf { it.kind == LiveLink.KIND_FRAME }; dropping = true; onKeyFrameWanted() }
+        // Viewer falling behind (weak link): a late picture is worse than a missing one, so throw
+        // away what's waiting and restart from a fresh key frame. At most once a second, since key
+        // frames are large and would only make a struggling link worse.
+        val now = SystemClock.elapsedRealtime()
+        val oldest = queue.peekFirst()
+        if (oldest != null && oldest.kind == LiveLink.KIND_FRAME && now - oldest.at > LiveLink.MAX_QUEUE_LAG_MS &&
+            now - lastDropAt > 1000) {
+            lastDropAt = now
+            queue.removeIf { it.kind == LiveLink.KIND_FRAME }; dropping = true; onKeyFrameWanted()
+        }
         if (dropping && !key) return
         dropping = false
-        queue.add(Pkt(LiveLink.KIND_FRAME, key, ptsUs, data))
+        // Stamp each frame with the accurate wall-clock time it was captured (both phones share
+        // that clock), so the viewer can show how old the picture is.
+        val captureMs = TrueTime.atElapsedNs(ptsUs * 1000 + (SystemClock.elapsedRealtimeNanos() - System.nanoTime()))
+        queue.add(Pkt(LiveLink.KIND_FRAME, key, captureMs * 1000, data))
     }
 
     fun stop() {
@@ -282,10 +300,14 @@ class LiveServer(val token: String, private val onKeyFrameWanted: () -> Unit) : 
  * decodes it onto a Surface. [onStatus] gets short states on the main thread ("" once video shows).
  */
 class LiveViewer(
+    ctx: Context,
     private val surface: Surface,
     private val onStatus: (String) -> Unit,
     private val onSize: (Int, Int) -> Unit,
+    /** How old the picture is when it leaves the decoder, in ms (averaged, about twice a second). */
+    private val onDelay: (Int) -> Unit = {},
 ) {
+    private val wifi = WifiFast(ctx, "DashCam:live-view").also { it.acquire() }
     private val ui = Handler(Looper.getMainLooper())
     @Volatile private var running = true
     @Volatile private var socket: Socket? = null
@@ -323,11 +345,55 @@ class LiveViewer(
         }, "live-view").apply { isDaemon = true; start() }
     }
 
+    /**
+     * A decoder plus the thread that puts its pictures on screen. Output has its own thread so a
+     * frame is shown the moment it is decoded, instead of waiting for the next one to arrive.
+     */
+    private inner class Decoder(w: Int, h: Int) {
+        val codec: MediaCodec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+        @Volatile private var alive = true
+        @Volatile var shown = false
+        private val out: Thread
+
+        init {
+            val f = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h)
+            if (Build.VERSION.SDK_INT >= 30) f.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
+            f.setInteger(MediaFormat.KEY_PRIORITY, 0)
+            f.setInteger(MediaFormat.KEY_OPERATING_RATE, Short.MAX_VALUE.toInt())   // run flat out, don't pace
+            // Chip makers' own low-latency switches (ignored where unknown): no reordering queue.
+            f.setInteger("vendor.qti-ext-dec-low-latency.enable", 1)
+            f.setInteger("vendor.qti-ext-dec-picture-order.enable", 1)
+            f.setInteger("vendor.rtc-ext-dec-low-latency.enable", 1)
+            f.setInteger("vendor.low-latency.enable", 1)
+            codec.configure(f, surface, null, 0); codec.start()
+            out = Thread({
+                val info = MediaCodec.BufferInfo()
+                var sum = 0L; var n = 0
+                while (alive) {
+                    val idx = try { codec.dequeueOutputBuffer(info, 20_000) } catch (_: Exception) { break }
+                    if (idx < 0) continue
+                    try { codec.releaseOutputBuffer(idx, true) } catch (_: Exception) { break }
+                    if (!shown) { shown = true; status("") }
+                    val delay = TrueTime.nowMs() - info.presentationTimeUs / 1000
+                    if (delay in 0..5000) {   // (an older remote sends a different clock: ignore)
+                        sum += delay; n++
+                        if (n >= 15) { val avg = (sum / n).toInt(); sum = 0; n = 0; ui.post { if (running) onDelay(avg) } }
+                    }
+                }
+            }, "live-show").apply { isDaemon = true; priority = Thread.MAX_PRIORITY; start() }
+        }
+
+        fun stop() {
+            alive = false
+            try { out.join(300) } catch (_: InterruptedException) {}
+            try { codec.stop() } catch (_: Exception) {}
+            try { codec.release() } catch (_: Exception) {}
+        }
+    }
+
     private fun decode(inp: DataInputStream) {
-        var codec: MediaCodec? = null
+        var dec: Decoder? = null
         var config: ByteArray? = null
-        var shown = false
-        val info = MediaCodec.BufferInfo()
         try {
             while (running) {
                 val len = inp.readInt(); val kind = inp.readByte().toInt(); val key = inp.readByte().toInt() == 1
@@ -337,33 +403,21 @@ class LiveViewer(
                 when (kind) {
                     LiveLink.KIND_FORMAT -> {
                         val b = java.nio.ByteBuffer.wrap(data); val w = b.int; val h = b.int
-                        codec?.let { try { it.stop(); it.release() } catch (_: Exception) {} }
-                        codec = MediaCodec.createDecoderByType(MediaFormat.MIMETYPE_VIDEO_AVC).apply {
-                            val f = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h)
-                            if (Build.VERSION.SDK_INT >= 30) f.setInteger(MediaFormat.KEY_LOW_LATENCY, 1)
-                            f.setInteger(MediaFormat.KEY_PRIORITY, 0)
-                            configure(f, surface, null, 0); start()
-                        }
-                        config = null; shown = false
+                        dec?.stop()
+                        dec = Decoder(w, h)
+                        config = null
                         ui.post { if (running) onSize(w, h) }
                     }
-                    LiveLink.KIND_CONFIG -> { config = data; codec?.let { queue(it, data, pts, MediaCodec.BUFFER_FLAG_CODEC_CONFIG) } }
+                    LiveLink.KIND_CONFIG -> { config = data; dec?.let { queue(it.codec, data, pts, MediaCodec.BUFFER_FLAG_CODEC_CONFIG) } }
                     LiveLink.KIND_FRAME -> {
-                        val c = codec ?: continue
+                        val d = dec ?: continue
                         if (config == null) continue
-                        queue(c, data, pts, if (key) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
+                        queue(d.codec, data, pts, if (key) MediaCodec.BUFFER_FLAG_KEY_FRAME else 0)
                     }
-                }
-                val c = codec ?: continue
-                while (true) {
-                    val idx = c.dequeueOutputBuffer(info, 0)
-                    if (idx < 0) break
-                    c.releaseOutputBuffer(idx, true)
-                    if (!shown) { shown = true; status("") }
                 }
             }
         } finally {
-            codec?.let { try { it.stop() } catch (_: Exception) {}; try { it.release() } catch (_: Exception) {} }
+            dec?.stop()
         }
     }
 
@@ -376,8 +430,27 @@ class LiveViewer(
 
     fun close() {
         running = false
+        wifi.release()
         target = null
         socket?.let { try { it.close() } catch (_: Exception) {} }
         thread?.interrupt()
     }
+}
+
+/**
+ * Keeps Wi‑Fi out of its power-saving mode while live video runs: in that mode the radio naps
+ * between beacons, which adds bursts of delay.
+ */
+class WifiFast(ctx: Context, tag: String) {
+    private val wm = ctx.applicationContext.getSystemService(WifiManager::class.java)
+    // Low-latency mode only works with the screen on and the app in front (the viewing phone);
+    // high-performance mode also works on a remote camera with its screen off.
+    @Suppress("DEPRECATION")
+    private val locks = listOfNotNull(
+        wm?.createWifiLock(WifiManager.WIFI_MODE_FULL_LOW_LATENCY, tag),
+        wm?.createWifiLock(WifiManager.WIFI_MODE_FULL_HIGH_PERF, "$tag-perf"),
+    ).onEach { it.setReferenceCounted(false) }
+
+    fun acquire() { locks.forEach { runCatching { it.acquire() } } }
+    fun release() { locks.forEach { runCatching { if (it.isHeld) it.release() } } }
 }

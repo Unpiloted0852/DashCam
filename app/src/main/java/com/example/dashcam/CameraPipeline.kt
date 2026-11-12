@@ -393,24 +393,48 @@ class CameraPipeline(
             val h = ((full.height * scale).toInt() / 16) * 16
             var codec: MediaCodec? = null
             try {
-                codec = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
-                val fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
-                    setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
-                    setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
-                    setInteger(MediaFormat.KEY_FRAME_RATE, 30)
-                    setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
-                    setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
-                    setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel4)
-                    setInteger(MediaFormat.KEY_PRIORITY, 0)
-                    if (Build.VERSION.SDK_INT >= 30) setInteger(MediaFormat.KEY_LATENCY, 1)
+                // First with every low-delay option; if this phone's encoder refuses the
+                // combination, again with the plain settings that are known to work.
+                for (tuned in listOf(true, false)) {
+                    val c = MediaCodec.createEncoderByType(MediaFormat.MIMETYPE_VIDEO_AVC)
+                    codec = c
+                    val fmt = MediaFormat.createVideoFormat(MediaFormat.MIMETYPE_VIDEO_AVC, w, h).apply {
+                        setInteger(MediaFormat.KEY_COLOR_FORMAT, MediaCodecInfo.CodecCapabilities.COLOR_FormatSurface)
+                        setInteger(MediaFormat.KEY_BIT_RATE, bitrate)
+                        setInteger(MediaFormat.KEY_FRAME_RATE, 30)
+                        setInteger(MediaFormat.KEY_PROFILE, MediaCodecInfo.CodecProfileLevel.AVCProfileBaseline)
+                        setInteger(MediaFormat.KEY_LEVEL, MediaCodecInfo.CodecProfileLevel.AVCLevel4)
+                        setInteger(MediaFormat.KEY_PRIORITY, 0)
+                        if (Build.VERSION.SDK_INT >= 30) setInteger(MediaFormat.KEY_LATENCY, 1)
+                        if (tuned) {
+                            // Key frames are several times larger than the rest and each one is a small
+                            // traffic jam: only every 2 s (a new viewer or a hiccup asks for one at once).
+                            setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 2)
+                            setInteger(MediaFormat.KEY_MAX_B_FRAMES, 0)
+                            // Even-sized frames (constant bit rate) travel with even delay.
+                            if (c.codecInfo.getCapabilitiesForType(MediaFormat.MIMETYPE_VIDEO_AVC).encoderCapabilities
+                                    .isBitrateModeSupported(MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR))
+                                setInteger(MediaFormat.KEY_BITRATE_MODE, MediaCodecInfo.EncoderCapabilities.BITRATE_MODE_CBR)
+                            setInteger("vendor.qti-ext-enc-low-latency.enable", 1)   // Qualcomm; ignored elsewhere
+                        } else setInteger(MediaFormat.KEY_I_FRAME_INTERVAL, 1)
+                    }
+                    try {
+                        c.setCallback(LiveCallback(sink), enc)
+                        c.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
+                        break
+                    } catch (ex: Exception) {
+                        if (!tuned) throw ex
+                        EventLog.log("Live", "low-delay encoder settings refused (${ex.message}) — using plain ones")
+                        try { c.release() } catch (_: Exception) {}
+                        codec = null
+                    }
                 }
-                codec.setCallback(LiveCallback(sink), enc)
-                codec.configure(fmt, null, null, MediaCodec.CONFIGURE_FLAG_ENCODE)
-                val input = codec.createInputSurface()
+                val live = codec!!
+                val input = live.createInputSurface()
                 sink.onLiveFormat(w, h)   // before start(): the SPS/PPS that follows must not be wiped
-                codec.start()
+                live.start()
                 liveEgl = e.createWindowSurface(input)
-                liveCodec = codec; liveInput = input; liveSize = Size(w, h); liveAngle = angle
+                liveCodec = live; liveInput = input; liveSize = Size(w, h); liveAngle = angle
                 EventLog.log("Live", "${role.label}: live view encoder ${w}x$h")
             } catch (ex: Exception) {
                 EventLog.log("Live", "live encoder failed: ${ex.message}")

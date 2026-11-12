@@ -174,6 +174,7 @@ class MainActivity : AppCompatActivity() {
 
     /** The live view was opened with the Backup Cam button (so it may close itself when driving off). */
     private var liveForBackup = false
+    private var liveTitle = "REMOTE CAMERA · LIVE"
     private var fastSince = 0L
 
     private fun openLive(backup: Boolean = false) {
@@ -188,7 +189,8 @@ class MainActivity : AppCompatActivity() {
         liveOpen = true
         liveForBackup = backup
         fastSince = 0L
-        findViewById<TextView>(R.id.liveLabel).text = if (backup) "BACKUP CAM · LIVE" else "REMOTE CAMERA · LIVE"
+        liveTitle = if (backup) "BACKUP CAM · LIVE" else "REMOTE CAMERA · LIVE"
+        findViewById<TextView>(R.id.liveLabel).text = liveTitle
         liveBack.isEnabled = true
         liveBox.visibility = View.VISIBLE
         liveW = 0; liveH = 0
@@ -208,8 +210,11 @@ class MainActivity : AppCompatActivity() {
 
     private fun startViewer(st: SurfaceTexture) {
         if (liveViewer != null) return
-        liveViewer = LiveViewer(Surface(st), { t -> if (liveOpen) setLiveStatus(t) }) { w, h ->
+        liveViewer = LiveViewer(this, Surface(st), { t -> if (liveOpen) setLiveStatus(t) }, { w, h ->
             liveW = w; liveH = h; layoutLive()
+        }) { delayMs ->
+            // How old the picture is (capture on the remote to decoded here; the screen adds a frame or two).
+            if (liveOpen) findViewById<TextView>(R.id.liveLabel).text = "$liveTitle · delay ≈ $delayMs ms"
         }
         updateLive()
     }
