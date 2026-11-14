@@ -33,6 +33,8 @@ class PlayerActivity : AppCompatActivity() {
         /** A seek is in flight; playback (re)starts only when every view has landed. */
         var seeking = false
         var speed = 1f
+        var speedAt = 0L
+        var speedChanges = 0
         var maxErr = 0
         fun local(pos: Int) = pos - offsetMs
         fun shared(mp: MediaPlayer) = runCatching { mp.currentPosition }.getOrNull()?.let { it + offsetMs }
@@ -282,7 +284,7 @@ class PlayerActivity : AppCompatActivity() {
     private fun setSpeed(t: Track, s: Float) {
         val mp = t.mp ?: return
         if (abs(s - t.speed) < 0.005f) return
-        if (runCatching { mp.playbackParams = mp.playbackParams.setSpeed(s) }.isSuccess) t.speed = s
+        if (runCatching { mp.playbackParams = mp.playbackParams.setSpeed(s) }.isSuccess) { t.speed = s; t.speedChanges++ }
     }
 
     private fun currentPos(): Int {
@@ -320,13 +322,17 @@ class PlayerActivity : AppCompatActivity() {
             val b = t.shared(mp) ?: continue
             val err = b - a   // > 0: follower ahead
             t.maxErr = maxOf(t.maxErr, abs(err))
+            // Each speed change makes Android's player reconfigure itself (a small stutter), so
+            // change it rarely: only when the views drift more than a frame apart, by a fixed step,
+            // and back to normal speed once they are together again.
+            val now = System.currentTimeMillis()
             when {
-                abs(err) > 250 -> { seekTrack(t, a); lastSync = System.currentTimeMillis() }
-                abs(err) <= 8 -> setSpeed(t, 1f)
-                // Up to ±25 % while far off (closes 250 ms in about a second), ±10 % when close.
-                else -> {
-                    val lim = if (abs(err) > 50) 0.25f else 0.1f
-                    setSpeed(t, (1f - (err * 0.004f).coerceIn(-lim, lim)).let { Math.round(it * 100) / 100f })
+                abs(err) > 250 -> { seekTrack(t, a); lastSync = now }
+                t.speed != 1f && (abs(err) <= 8 || (err > 0) != (t.speed < 1f)) -> setSpeed(t, 1f)
+                t.speed == 1f && abs(err) > 35 && now - t.speedAt > 1000 -> {
+                    val step = if (abs(err) > 100) 0.1f else 0.05f
+                    setSpeed(t, if (err > 0) 1f - step else 1f + step)
+                    t.speedAt = now
                 }
             }
         }
@@ -334,8 +340,8 @@ class PlayerActivity : AppCompatActivity() {
         if (now - lastReport > 10_000) {
             lastReport = now
             val r = tracks.filter { it !== m && shown(it) && it.mp != null }
-            if (r.isNotEmpty()) EventLog.log("Player", "sync vs ${m.name}: " + r.joinToString { "${it.name} max ${it.maxErr} ms" })
-            r.forEach { it.maxErr = 0 }
+            if (r.isNotEmpty()) EventLog.log("Player", "sync vs ${m.name}: " + r.joinToString { "${it.name} max ${it.maxErr} ms, ${it.speedChanges} speed changes" })
+            r.forEach { it.maxErr = 0; it.speedChanges = 0 }
         }
     }
 

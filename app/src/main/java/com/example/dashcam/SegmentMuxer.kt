@@ -40,6 +40,25 @@ class SegmentMuxer(
     private var pfd: ParcelFileDescriptor? = null
     private var uri: Uri? = null
     private var curName: String? = null
+    private var firstElapsedNs = 0L
+    private var startWall = 0L
+
+    /**
+     * The accurate clock may have been set only after this clip began (a remote camera gets the main
+     * phone's time a few seconds after linking; a phone without internet waits for NTP or GPS). The
+     * first frame's moment is known exactly on the phone's own steady clock, so work out its wall
+     * time again with the clock as it is now, and store the better value.
+     */
+    private fun correctStartWall(m: Sink) {
+        if (firstElapsedNs == 0L || startWall == 0L) return
+        val better = TrueTime.atElapsedNs(firstElapsedNs)
+        val diff = better - startWall
+        firstElapsedNs = 0L
+        if (kotlin.math.abs(diff) < 5) return
+        try { m.setStartWall(better) } catch (e: Exception) { Log.w(TAG, "start time", e); return }
+        curName?.let { Storage.recordStart(ctx, it, better) }
+        EventLog.log("Clip", "$tag: start time corrected by $diff ms (clock synced after the clip began)")
+    }
     private var vTrack = -1
     private var aTrack = -1
     private var segIndex = -1L
@@ -93,7 +112,9 @@ class SegmentMuxer(
         if (first) {
             // When the file's first frame was captured (frame times use the monotonic clock).
             val elapsedNs = info.presentationTimeUs * 1000 + (SystemClock.elapsedRealtimeNanos() - System.nanoTime())
+            firstElapsedNs = elapsedNs
             val wall = TrueTime.atElapsedNs(elapsedNs)
+            startWall = wall
             try { m.setStartWall(wall) } catch (e: Exception) { Log.w(TAG, "start time", e) }
             curName?.let { Storage.recordStart(ctx, it, wall) }
         }
@@ -143,6 +164,7 @@ class SegmentMuxer(
             aTrack = if (audioFormat != null) 1 else -1
             muxer = m; pfd = fd; uri = u; segIndex = idx
             firstPtsUs = -1L; lastPtsUs = -1L
+            firstElapsedNs = 0L; startWall = 0L
             curName = clock.fileName(idx, tag)
             Storage.recordStart(ctx, clock.fileName(idx, tag), TrueTime.nowMs())   // refined at the first frame
             lastError = null
@@ -163,6 +185,7 @@ class SegmentMuxer(
 
     private fun closeCurrent() {
         val m = muxer ?: return
+        correctStartWall(m)
         try { m.stop() } catch (e: Exception) {
             Log.w(TAG, "muxer stop", e)
             EventLog.log("Clip", "$tag: finalising clip failed: ${e.message}")
