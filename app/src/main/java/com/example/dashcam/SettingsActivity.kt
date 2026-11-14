@@ -120,6 +120,18 @@ class SettingsActivity : AppCompatActivity() {
                 setOnPreferenceClickListener { Updater.checkNow(requireActivity()); true }
             }
             findPreference<Preference>("baro_calibrate")?.setOnPreferenceClickListener { calibrateDialog(); true }
+            findPreference<Preference>("remote_update_setup")?.setOnPreferenceClickListener {
+                val ctx = requireContext()
+                val pkg = android.net.Uri.parse("package:${ctx.packageName}")
+                when {
+                    !ctx.packageManager.canRequestPackageInstalls() ->
+                        startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, pkg))
+                    !Updater.canReopen(ctx) ->
+                        startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION, pkg))
+                    else -> android.widget.Toast.makeText(ctx, "Nothing more to set up", android.widget.Toast.LENGTH_SHORT).show()
+                }
+                true
+            }
             findPreference<Preference>("share_log")?.setOnPreferenceClickListener {
                 EventLog.init(requireContext())
                 val text = EventLog.read().takeLast(200_000).ifEmpty { "(log is empty)" }
@@ -151,6 +163,9 @@ class SettingsActivity : AppCompatActivity() {
         private fun updateLinkPrefs(role: String) {
             findPreference<Preference>("link_device")?.isVisible = role != "normal"
             findPreference<Preference>("remote_camera")?.isVisible = role == "remote"
+            findPreference<Preference>("remote_update_setup")?.isVisible = role == "remote"
+            findPreference<Preference>("backup_button")?.isVisible = role == "primary"
+            findPreference<Preference>("backup_return_kmh")?.isVisible = role == "primary"
             // A remote camera records one camera and takes its stamp/clip settings from the main phone.
             findPreference<Preference>("cabin_enabled")?.isEnabled = role != "remote"
             findPreference<Preference>("cabin_enabled")?.summary = if (role == "remote")
@@ -244,6 +259,17 @@ class SettingsActivity : AppCompatActivity() {
             super.onResume()
             barometer()?.let { sensors?.registerListener(baroListener, it, android.hardware.SensorManager.SENSOR_DELAY_NORMAL) }
             updateCalibrationSummary()
+            findPreference<Preference>("remote_update_setup")?.summary = run {
+                val ctx = requireContext()
+                val install = ctx.packageManager.canRequestPackageInstalls()
+                val reopen = Updater.canReopen(ctx)
+                when {
+                    !install -> "The main phone can update this phone's DashCam over the link. Step 1 of 2: tap, then allow DashCam to install apps."
+                    !reopen -> "Step 2 of 2: tap, then allow DashCam to display over other apps, so it can reopen itself after an update."
+                    android.os.Build.VERSION.SDK_INT < 31 -> "Set up. On this Android version each update still needs one tap on this phone to confirm."
+                    else -> "Set up: the main phone updates this phone's DashCam, and it reopens by itself."
+                }
+            }
             findPreference<androidx.preference.Preference>("battery_opt")?.summary =
                 if (BatteryHelper.isExempt(requireContext())) "Unrestricted — recording keeps running in the background"
                 else "Currently restricted: Android may pause recording when the screen is off or another app is in front. Tap to allow."

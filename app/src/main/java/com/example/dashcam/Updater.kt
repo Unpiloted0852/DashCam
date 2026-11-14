@@ -26,6 +26,7 @@ import java.net.URL
  */
 object Updater {
     private const val TAG = "Updater"
+    const val EXTRA_AFTER_UPDATE = "after_update"
     private const val CHECK_EVERY_MS = 6 * 3600_000L
     private val main = Handler(Looper.getMainLooper())
 
@@ -148,6 +149,58 @@ object Updater {
         }.start()
     }
 
+    /** Can this phone install an update without anyone tapping (needs Android 12 and the install permission)? */
+    fun canInstallQuietly(ctx: Context) = Build.VERSION.SDK_INT >= 31 && ctx.packageManager.canRequestPackageInstalls()
+
+    /** Can this phone bring itself back on screen after an update ("display over other apps")? */
+    fun canReopen(ctx: Context) = Settings.canDrawOverlays(ctx)
+
+    /** Version name and code of an APK file, or null if it isn't a readable APK of this app. */
+    fun apkVersion(ctx: Context, apk: java.io.File): Pair<String, Long>? = try {
+        val pi = ctx.packageManager.getPackageArchiveInfo(apk.path, 0)
+        if (pi == null || pi.packageName != ctx.packageName) null else (pi.versionName ?: "?") to pi.longVersionCode
+    } catch (_: Exception) { null }
+
+    /**
+     * Install an update that is already on this phone (sent by the main phone to a remote camera).
+     * Returns null once the install is handed to Android, else what is wrong. Android itself only
+     * accepts an APK signed with the same key as the installed app. Blocking.
+     */
+    fun installFile(ctx: Context, apk: java.io.File): String? {
+        val (name, code) = apkVersion(ctx, apk) ?: return "not a DashCam update"
+        val mine = ctx.packageManager.getPackageInfo(ctx.packageName, 0).longVersionCode
+        if (code <= mine) return "already on v${BuildConfig.VERSION_NAME}"
+        if (!ctx.packageManager.canRequestPackageInstalls()) return "installing updates isn't allowed on this phone yet"
+        val pi = ctx.packageManager.packageInstaller
+        var id = -1
+        return try {
+            val params = PackageInstaller.SessionParams(PackageInstaller.SessionParams.MODE_FULL_INSTALL)
+            params.setAppPackageName(ctx.packageName)
+            if (Build.VERSION.SDK_INT >= 31) params.setRequireUserAction(PackageInstaller.SessionParams.USER_ACTION_NOT_REQUIRED)
+            id = pi.createSession(params)
+            pi.openSession(id).use { session ->
+                apk.inputStream().use { input ->
+                    session.openWrite("dashcam.apk", 0, apk.length()).use { out -> input.copyTo(out, 64 * 1024); session.fsync(out) }
+                }
+                val status = PendingIntent.getBroadcast(ctx, id, Intent(ctx, InstallReceiver::class.java),
+                    PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_MUTABLE)
+                val ready = java.util.concurrent.CountDownLatch(1)
+                val hook = beforeInstall
+                if (hook != null) main.post { try { hook { ready.countDown() } } catch (_: Exception) { ready.countDown() } }
+                else ready.countDown()
+                ready.await(15, java.util.concurrent.TimeUnit.SECONDS)
+                PreferenceManager.getDefaultSharedPreferences(ctx).edit().putString("update_installing", name).commit()
+                EventLog.log("Update", "installing v$name sent by the main phone")
+                session.commit(status.intentSender)
+            }
+            null
+        } catch (e: Exception) {
+            if (id >= 0) try { pi.abandonSession(id) } catch (_: Exception) {}
+            EventLog.log("Update", "install from the main phone failed: ${e.message}")
+            e.message ?: "install failed"
+        }
+    }
+
     /** Set by the recording service: stops a recording cleanly, then calls back. */
     @Volatile var beforeInstall: ((done: () -> Unit) -> Unit)? = null
 
@@ -163,6 +216,14 @@ object Updater {
             if (prefs.getString("update_installing", null) == null) return
             prefs.edit().remove("update_installing").apply()
             EventLog.init(ctx); EventLog.log("Update", "now v${BuildConfig.VERSION_NAME}")
+            // With "display over other apps" allowed the app puts itself back on screen (a remote
+            // camera nobody is touching); the notification stays as the fallback.
+            if (canReopen(ctx)) try {
+                ctx.startActivity(Intent(ctx, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK).putExtra(EXTRA_AFTER_UPDATE, true))
+                EventLog.log("Update", "reopened after the update")
+                return
+            } catch (e: Exception) { EventLog.log("Update", "couldn't reopen: ${e.message}") }
             try {
                 val nm = ctx.getSystemService(android.app.NotificationManager::class.java)
                 nm.createNotificationChannel(android.app.NotificationChannel("updates", "Updates",

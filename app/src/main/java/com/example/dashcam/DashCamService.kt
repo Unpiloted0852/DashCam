@@ -645,6 +645,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
             }
             if (tickCount % 5 == 0L) sendState()
             if (tickCount % 10 == 1L) l.send("wifi", JSONObject().put("freq", wifiStationFreq(this)))
+            if (tickCount % 5 == 3L) ui.post { maybeUpdateRemote() }
         } else {
             if (tickCount % 3 == 0L) sendStatus()
             if (liveVideo && now0() - liveAskedAt > LIVE_KEEPALIVE_MS) ui.post { stopLiveVideo("main phone stopped asking") }
@@ -759,6 +760,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
             .put("cam", mainCam?.let { if (it.cameraOpen) "ok" else "down" } ?: if (idle) "idle" else "none")
         (muxerError() ?: warning)?.let { o.put("warn", it) }
         o.put("fix", Telemetry.freshFix() != null)
+        o.put("inst", Updater.canInstallQuietly(this)).put("ovl", Updater.canReopen(this))
         l.send("status", o)
     }
 
@@ -820,7 +822,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
                     if (p.optString("tsrc").startsWith("main phone") && unc >= 0) parts += "time ±$unc ms"
                     if (p.optString("cam") == "down") parts += "camera busy"
                     "$who ($name): ${parts.joinToString(" · ")}" + (p.optString("warn").takeIf { it.isNotEmpty() }?.let { "\n⚠ $it" } ?: "")
-                }
+                } + (remoteUpdateNote?.let { "\n$it" } ?: "")
             } else {
                 val t = if (TrueTime.linkFresh()) " · time ±${TrueTime.uncertaintyMs} ms" else " · syncing time…"
                 "$who: connected to $name$t" + if (liveVideo) " · showing live view" else ""
@@ -858,6 +860,63 @@ class DashCamService : Service(), CameraPipeline.Listener,
     }
 
     val linkConnected: Boolean get() = link?.connected == true
+
+    // ------------------------------------------------------------------ updating the remote camera
+
+    /** What is happening with the remote camera's update, for the status line (null = nothing). */
+    @Volatile var remoteUpdateNote: String? = null; private set
+    private var remoteUpdateBusy = false
+    private var remoteUpdateTriedAt = 0L
+    private var remoteUpdateTriedFor = ""
+
+    /** The remote camera's DashCam version, while linked. */
+    private fun peerVersion(): String? = linkState.takeIf { it.phase == RemoteLink.Phase.CONNECTED }
+        ?.detail?.removePrefix("v")?.takeIf { it.isNotEmpty() && it != "?" }
+
+    /** Main phone: the linked remote camera runs an older DashCam than this phone. */
+    val remoteOutdated: Boolean get() = BuildConfig.UPDATES_ENABLED && settings.isPrimary &&
+        peerVersion()?.let { Updater.isNewer(BuildConfig.VERSION_NAME, it) } == true
+
+    /**
+     * Main phone: if the remote camera runs an older DashCam, send it this phone's own copy over the
+     * Wi‑Fi link; the remote installs it and reopens itself. Automatic only while neither phone is
+     * recording (the update restarts the remote's app); [manual] = asked for by the user, now.
+     */
+    fun maybeUpdateRemote(manual: Boolean = false) {
+        val peer = peerVersion()
+        if (!remoteOutdated || peer == null) { if (!remoteUpdateBusy) remoteUpdateNote = null; return }
+        if (remoteUpdateBusy) return
+        val p = peerStatus?.takeIf { SystemClock.elapsedRealtime() - peerStatusAt < 10_000 }
+        val addr = liveAddr
+        val token = liveAnswer?.optString("token")
+        val apk = java.io.File(applicationInfo.sourceDir)
+        val waiting = "⬆ Remote camera has v$peer — it will be updated to v${BuildConfig.VERSION_NAME} "
+        val why = when {
+            applicationInfo.splitSourceDirs?.isNotEmpty() == true || !apk.canRead() -> "⚠ This phone's DashCam can't be copied to the remote — update the remote by hand"
+            p != null && p.has("inst") && !p.optBoolean("inst") ->
+                "⚠ Remote camera has v$peer and can't take updates yet — on the remote: Settings → Remote camera → Hands-free updates"
+            addr == null || token.isNullOrEmpty() -> waiting + "once the Wi‑Fi link is up"
+            !manual && (recording || stopping || p == null || p.optBoolean("rec")) -> waiting + "when neither phone is recording (hold here to do it now)"
+            !manual && remoteUpdateTriedFor == peer && now0() - remoteUpdateTriedAt < 30 * 60_000 -> remoteUpdateNote ?: (waiting + "(hold here to try again)")
+            else -> null
+        }
+        if (why != null) { if (why != remoteUpdateNote) { remoteUpdateNote = why; changed() }; return }
+        remoteUpdateBusy = true
+        remoteUpdateTriedAt = now0(); remoteUpdateTriedFor = peer
+        remoteUpdateNote = "⬆ Sending v${BuildConfig.VERSION_NAME} to the remote camera…"
+        EventLog.log("Update", "remote camera has v$peer: sending v${BuildConfig.VERSION_NAME}")
+        changed()
+        dlExec.execute {
+            val err = ClipServer.pushUpdate(addr!!, token!!, apk)
+            ui.post {
+                remoteUpdateBusy = false
+                remoteUpdateNote = if (err == null) "⬆ Remote camera is installing v${BuildConfig.VERSION_NAME} and will reconnect"
+                                   else "⚠ Remote camera update: $err"
+                EventLog.log("Update", "remote camera: " + (err ?: "accepted the update"))
+                changed()
+            }
+        }
+    }
 
     /** Main phone: a remote camera is connected, reporting in and its camera works (for the Backup Cam button). */
     val remoteCamReady: Boolean get() {

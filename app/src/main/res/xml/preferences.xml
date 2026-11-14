@@ -10,6 +10,8 @@
         <ListPreference app:key="remote_camera" app:title="Camera to record (remote camera)"
             app:entries="@array/remote_camera_labels" app:entryValues="@array/remote_camera_values"
             app:defaultValue="back" app:useSimpleSummaryProvider="true" />
+        <Preference app:key="remote_update_setup" app:title="Hands-free updates"
+            app:summary="" />
         <SwitchPreferenceCompat app:key="backup_button" app:title="Backup Cam button"
             app:summary="On the main phone: a big button showing the remote camera full screen, while stopped or below 10 km/h (6 mph)"
             app:defaultValue="true" />

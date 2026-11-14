@@ -60,13 +60,25 @@ class ClipServer(ctx: Context, private val token: String) {
         s.use { sock ->
             try {
                 sock.soTimeout = 15_000
-                val inp = BufferedReader(InputStreamReader(sock.getInputStream(), Charsets.ISO_8859_1))
-                val req = inp.readLine() ?: return
+                // Header lines are read byte by byte so that a request body (an update) stays in the stream.
+                val raw = java.io.BufferedInputStream(sock.getInputStream(), 64 * 1024)
+                fun line(): String? {
+                    val b = StringBuilder()
+                    while (true) {
+                        val c = raw.read()
+                        if (c < 0) return if (b.isEmpty()) null else b.toString()
+                        if (c == '\n'.code) return b.toString().trimEnd('\r')
+                        if (b.length < 4096) b.append(c.toChar())
+                    }
+                }
+                val req = line() ?: return
                 var range = 0L
+                var bodyLen = -1L
                 while (true) {
-                    val h = inp.readLine() ?: break
+                    val h = line() ?: break
                     if (h.isEmpty()) break
                     if (h.startsWith("Range:", true)) range = h.substringAfter("bytes=").substringBefore("-").trim().toLongOrNull() ?: 0L
+                    if (h.startsWith("Content-Length:", true)) bodyLen = h.substringAfter(":").trim().toLongOrNull() ?: -1L
                 }
                 val target = req.split(" ").getOrNull(1) ?: return
                 val path = target.substringBefore("?")
@@ -107,6 +119,34 @@ class ClipServer(ctx: Context, private val token: String) {
                         } finally { transfers.decrementAndGet() }
                         out.flush()
                     }
+                    "/update" -> {
+                        // The main phone sends a newer DashCam: save it, answer, then install.
+                        if (bodyLen !in 1_000_000L..200_000_000L) return reply(out, 400, "text/plain", "bad size".toByteArray())
+                        val f = File(app.cacheDir, "update.apk")
+                        sock.soTimeout = 30_000
+                        var got = 0L
+                        f.outputStream().use { fo ->
+                            val buf = ByteArray(64 * 1024)
+                            while (got < bodyLen) {
+                                val n = raw.read(buf, 0, minOf(buf.size.toLong(), bodyLen - got).toInt()); if (n < 0) break
+                                fo.write(buf, 0, n); got += n
+                            }
+                        }
+                        val problem = when {
+                            got != bodyLen -> "transfer incomplete"
+                            Updater.apkVersion(app, f) == null -> "not a DashCam update"
+                            !app.packageManager.canRequestPackageInstalls() -> "installing updates isn't allowed on the remote yet"
+                            else -> null
+                        }
+                        val o = JSONObject().put("ok", problem == null)
+                        problem?.let { o.put("err", it) }
+                        reply(out, 200, "application/json", o.toString().toByteArray())
+                        EventLog.log("Update", "update from the main phone: " + (problem ?: "received ${got / 1024} KB"))
+                        if (problem == null) Thread({
+                            Thread.sleep(300)   // let the answer reach the main phone first
+                            Updater.installFile(app, f)?.let { EventLog.log("Update", "not installed: $it") }
+                        }, "remote-update").start() else f.delete()
+                    }
                     else -> reply(out, 404, "text/plain", ByteArray(0))
                 }
             } catch (e: Exception) {
@@ -136,6 +176,25 @@ class ClipServer(ctx: Context, private val token: String) {
 
         private fun open(u: URL, timeout: Int = 8000) = (u.openConnection() as HttpURLConnection).apply {
             connectTimeout = 4000; readTimeout = timeout; useCaches = false
+        }
+
+        /**
+         * Main phone: send [apk] (this phone's own DashCam) to the remote for it to install.
+         * Returns null if the remote accepted it, else what went wrong. Blocking.
+         */
+        fun pushUpdate(addr: InetAddress, token: String, apk: File): String? {
+            val c = open(url(addr, token, "/update"), 30_000)
+            return try {
+                c.requestMethod = "POST"; c.doOutput = true
+                c.setRequestProperty("Content-Type", "application/vnd.android.package-archive")
+                c.setFixedLengthStreamingMode(apk.length())
+                c.outputStream.use { o -> apk.inputStream().use { it.copyTo(o, 64 * 1024) } }
+                when (val code = c.responseCode) {
+                    200 -> JSONObject(c.inputStream.bufferedReader().readText()).let { if (it.optBoolean("ok")) null else it.optString("err", "refused") }
+                    404 -> "the remote's DashCam is too old to be updated this way — update it by hand once"
+                    else -> "HTTP $code"
+                }
+            } catch (e: Exception) { e.message ?: e.toString() } finally { c.disconnect() }
         }
 
         /** Main phone: list the remote's clips. Blocking. */

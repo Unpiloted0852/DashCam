@@ -69,6 +69,11 @@ class MainActivity : AppCompatActivity() {
         PreferenceManager.setDefaultValues(this, R.xml.preferences, false)
         settings = DashSettings(this)
         setContentView(R.layout.activity_main)
+        // Reopened by itself after an update (a remote camera nobody is touching): come up over the
+        // lock screen and wake the display, or the cameras wouldn't be allowed to start.
+        if (intent?.getBooleanExtra(Updater.EXTRA_AFTER_UPDATE, false) == true && Build.VERSION.SDK_INT >= 27) {
+            setShowWhenLocked(true); setTurnScreenOn(true)
+        }
         if (Build.VERSION.SDK_INT >= 30) {
             window.attributes.layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_ALWAYS
@@ -149,6 +154,19 @@ class MainActivity : AppCompatActivity() {
         findViewById<Button>(R.id.liveBtn).setOnClickListener { openLive() }
         findViewById<Button>(R.id.backupBtn).setOnClickListener { openLive(backup = true) }
         linkStatus.setOnClickListener { if (settings.isPrimary) openLive() }
+        // Holding the remote-camera line: update an outdated remote now (otherwise it waits until
+        // neither phone is recording).
+        linkStatus.setOnLongClickListener {
+            val s = service
+            if (s == null || !s.remoteOutdated) return@setOnLongClickListener false
+            androidx.appcompat.app.AlertDialog.Builder(this)
+                .setTitle("Update the remote camera now?")
+                .setMessage("This phone sends its DashCam (v${BuildConfig.VERSION_NAME}) to the remote camera, which installs it and reopens. " +
+                    "The remote stops recording for about 20 seconds.")
+                .setPositiveButton("Update now") { _, _ -> s.maybeUpdateRemote(manual = true) }
+                .setNegativeButton("Later", null).show()
+            true
+        }
         findViewById<Button>(R.id.liveCloseBtn).setOnClickListener { closeLive() }
         findViewById<Button>(R.id.liveMirrorBtn).setOnClickListener {
             livePrefs.edit().putBoolean("live_mirror", !livePrefs.getBoolean("live_mirror", true)).apply()
