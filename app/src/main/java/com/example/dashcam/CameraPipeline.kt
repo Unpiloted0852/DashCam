@@ -382,7 +382,7 @@ class CameraPipeline(
     // ---------------------------------------------------------------- live view
 
     /** Start the live-view encoder (about [longSide] px on the long side). Idempotent. */
-    fun startLive(sink: LiveSink, longSide: Int = 1280, bitrate: Int = 6_000_000) {
+    fun startLive(sink: LiveSink, longSide: Int = 1280, bitrate: Int = LiveLink.BITRATE_START) {
         runOnGl(5000) {
             val e = egl ?: return@runOnGl
             if (liveCodec != null) { requestLiveKeyFrame(); return@runOnGl }
@@ -441,6 +441,12 @@ class CameraPipeline(
                 try { codec?.release() } catch (_: Exception) {}
             }
         }
+    }
+
+    /** Change the live stream's bit rate on the fly (the sender adapts it to what the link carries). */
+    fun setLiveBitrate(bps: Int) {
+        try { liveCodec?.setParameters(Bundle().apply { putInt(MediaCodec.PARAMETER_KEY_VIDEO_BITRATE, bps) }) }
+        catch (_: Exception) {}
     }
 
     fun requestLiveKeyFrame() {

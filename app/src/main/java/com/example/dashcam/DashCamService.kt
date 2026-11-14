@@ -915,7 +915,9 @@ class DashCamService : Service(), CameraPipeline.Listener,
         if (now0() < liveGroupRetryAt) return
         LiveLink.problem(this)?.let { link?.send("live", JSONObject().put("ok", false).put("err", it)); return }
         val token = LiveLink.randomString(16)
-        val srv = try { LiveServer(token) { mainCam?.requestLiveKeyFrame() } } catch (e: Exception) {
+        val srv = try {
+            LiveServer(token, { mainCam?.requestLiveKeyFrame() }) { bps -> mainCam?.setLiveBitrate(bps) }
+        } catch (e: Exception) {
             link?.send("live", JSONObject().put("ok", false).put("err", "can't open the video port: ${e.message}")); return
         }
         liveServer = srv
@@ -929,6 +931,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         val want = wantedGroupFreq()
         w.createGroup(ssid, pass, want, { freq ->
             if (liveServer !== srv) return@createGroup
+            if (want == 0 && freq in 1..2999) no5Ghz = true
             EventLog.log("Live", "Wi‑Fi Direct group $ssid up on $freq MHz" +
                 if (want > 0) (if (freq == want) " (same channel as Wi‑Fi)" else " (wanted $want MHz, the Wi‑Fi channel)") else "")
             liveCreds = JSONObject().put("ok", true).put("ssid", ssid).put("pass", pass).put("token", token).put("freq", freq)
@@ -1027,8 +1030,17 @@ class DashCamService : Service(), CameraPipeline.Listener,
     private var retuneWanted = 0
     private var retunedAt = 0L
 
-    /** Channel for the group: the main phone's Wi‑Fi, else this phone's, else 0 (any 5 GHz). */
-    private fun wantedGroupFreq(): Int = mainWifiFreq.takeIf { it > 0 } ?: wifiStationFreq(this)
+    /**
+     * Channel for the group: the Wi‑Fi channel of the main phone (else this phone) if that is a
+     * 5 GHz one, so the radio needn't hop; otherwise 0 = any 5 GHz channel. Never 2.4 GHz by
+     * choice: it is crowded, slower, and shares the air with the Bluetooth link between the phones.
+     */
+    private fun wantedGroupFreq(): Int {
+        val f = mainWifiFreq.takeIf { it > 0 } ?: wifiStationFreq(this)
+        return if (f >= 5000) f else 0
+    }
+    /** This phone couldn't host on 5 GHz when asked: don't keep rebuilding the group to try again. */
+    private var no5Ghz = false
 
     /**
      * Remote: if either phone joined a Wi‑Fi network on another channel (e.g. arriving home), move the
@@ -1036,13 +1048,18 @@ class DashCamService : Service(), CameraPipeline.Listener,
      */
     private fun retuneLiveGroup() {
         val have = liveCreds?.optInt("freq") ?: return
-        val want = wantedGroupFreq()
-        if (want <= 0 || have <= 0 || want == have) { retuneWanted = 0; return }
+        if (have <= 0) return
+        var want = wantedGroupFreq()
+        // A group left on 2.4 GHz (set up at home on the router's channel, or as a fallback) is
+        // moved to 5 GHz as soon as nothing ties it there.
+        val leave24 = want == 0 && have < 3000 && !no5Ghz
+        if (leave24) want = -1
+        if (want == 0 || want == have) { retuneWanted = 0; return }
         if (liveVideo || clipServer?.busy == true || now0() - retunedAt < 60_000) return
         // Ask twice in a row (20 s apart) so a brief Wi‑Fi blip doesn't tear the group down.
         if (retuneWanted != want) { retuneWanted = want; return }
         retuneWanted = 0; retunedAt = now0()
-        closeLiveGroup("moving to the Wi‑Fi channel ($have → $want MHz)")
+        closeLiveGroup(if (leave24) "moving from 2.4 GHz ($have MHz) to 5 GHz" else "moving to the Wi‑Fi channel ($have → $want MHz)")
         ensureLiveGroup()
     }
 

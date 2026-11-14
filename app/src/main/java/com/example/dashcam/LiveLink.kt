@@ -59,8 +59,12 @@ object LiveLink {
     const val KIND_FORMAT = 0   // payload: int32 width, int32 height
     const val KIND_CONFIG = 1   // SPS/PPS
     const val KIND_FRAME = 2
-    /** Frames waiting longer than this on the sending side are dropped. */
-    const val MAX_QUEUE_LAG_MS = 120L
+    /** Frames waiting longer than this on the sending side are dropped (after lowering quality didn't help). */
+    const val MAX_QUEUE_LAG_MS = 350L
+    /** Live video bit rate: where it starts, and the range it adapts within. */
+    const val BITRATE_START = 4_000_000
+    const val BITRATE_MIN = 500_000
+    const val BITRATE_MAX = 8_000_000
 }
 
 /** Channel (MHz) of the Wi‑Fi network this phone is connected to, or 0. */
@@ -184,11 +188,17 @@ class WifiDirect(ctx: Context) {
 }
 
 /** Remote camera: serves the live H.264 feed to the main phone (one viewer at a time). */
-class LiveServer(val token: String, private val onKeyFrameWanted: () -> Unit) : CameraPipeline.LiveSink {
+class LiveServer(
+    val token: String,
+    private val onKeyFrameWanted: () -> Unit,
+    /** Asks the encoder for a new bit rate (bits per second). */
+    private val onBitrate: (Int) -> Unit = {},
+) : CameraPipeline.LiveSink {
     private class Pkt(val kind: Int, val key: Boolean, val pts: Long, val data: ByteArray) {
         val at = SystemClock.elapsedRealtime()
     }
     private var lastDropAt = 0L
+    private val rate = LiveRate()
 
     @Volatile private var running = true
     @Volatile private var client: Socket? = null
@@ -230,6 +240,7 @@ class LiveServer(val token: String, private val onKeyFrameWanted: () -> Unit) : 
 
     private fun sendLoop(s: Socket) {
         queue.clear(); dropping = true
+        onBitrate(rate.reset())
         try {
             val out = DataOutputStream(s.getOutputStream().buffered(32 * 1024))
             format?.let { write(out, it) }
@@ -274,8 +285,15 @@ class LiveServer(val token: String, private val onKeyFrameWanted: () -> Unit) : 
         // frames are large and would only make a struggling link worse.
         val now = SystemClock.elapsedRealtime()
         val oldest = queue.peekFirst()
-        if (oldest != null && oldest.kind == LiveLink.KIND_FRAME && now - oldest.at > LiveLink.MAX_QUEUE_LAG_MS &&
-            now - lastDropAt > 1000) {
+        val lag = if (oldest != null && oldest.kind == LiveLink.KIND_FRAME) now - oldest.at else 0L
+        // First line of defence: match the picture quality to what the link carries right now.
+        // A slightly softer picture that keeps moving beats a sharp one that freezes.
+        rate.step(lag, now)?.let { bps ->
+            onBitrate(bps)
+            EventLog.log("Live", "link ${if (bps < rate.previous) "struggling" else "clear"}: video now ${bps / 1000} kbit/s")
+        }
+        // Last resort, when the link has all but stopped: skip ahead to a fresh key frame.
+        if (lag > LiveLink.MAX_QUEUE_LAG_MS && now - lastDropAt > 1500) {
             lastDropAt = now
             queue.removeIf { it.kind == LiveLink.KIND_FRAME }; dropping = true; onKeyFrameWanted()
         }
@@ -422,8 +440,10 @@ class LiveViewer(
     }
 
     private fun queue(c: MediaCodec, data: ByteArray, pts: Long, flags: Int) {
-        val idx = c.dequeueInputBuffer(50_000)
-        if (idx < 0) return   // decoder busy: drop this frame
+        // Every frame builds on the one before: skipping one would smear the picture until the
+        // next key frame. So wait for the decoder; if it is truly stuck, start the stream afresh.
+        val idx = c.dequeueInputBuffer(1_000_000)
+        if (idx < 0) throw IOException("decoder not accepting frames")
         c.getInputBuffer(idx)?.apply { clear(); put(data) }
         c.queueInputBuffer(idx, 0, data.size, pts, flags)
     }
@@ -453,4 +473,40 @@ class WifiFast(ctx: Context, tag: String) {
 
     fun acquire() { locks.forEach { runCatching { it.acquire() } } }
     fun release() { locks.forEach { runCatching { if (it.isHeld) it.release() } } }
+}
+
+/**
+ * Picks the live video's bit rate from how long frames wait to be sent ([lagMs]): waiting means
+ * the link carries less than we produce, so step down quickly; a link that has stayed clear for a
+ * few seconds gets a little more. Plain arithmetic so it can be unit-tested.
+ */
+class LiveRate(
+    private val start: Int = LiveLink.BITRATE_START,
+    private val min: Int = LiveLink.BITRATE_MIN,
+    private val max: Int = LiveLink.BITRATE_MAX,
+) {
+    var current = start; private set
+    var previous = start; private set
+    private var slowFrames = 0
+    private var lastChange = 0L
+    private var clearSince = 0L
+
+    fun reset(): Int { current = start; previous = start; slowFrames = 0; lastChange = 0; clearSince = 0; return current }
+
+    /** Call once per frame. Returns the new bit rate when it should change, else null. */
+    fun step(lagMs: Long, nowMs: Long): Int? {
+        if (lagMs > 20) clearSince = 0L else if (clearSince == 0L) clearSince = nowMs
+        slowFrames = if (lagMs > 50) slowFrames + 1 else 0
+        val next = when {
+            // Clearly behind (or behind for 4 frames running): cut by 40 %, at most every 0.4 s.
+            (lagMs > 120 || slowFrames >= 4) && nowMs - lastChange >= 400 -> (current * 0.6f).toInt().coerceAtLeast(min)
+            // Clear for 3 s: add 20 %, then wait another 3 s.
+            clearSince != 0L && nowMs - clearSince >= 3000 && nowMs - lastChange >= 3000 -> (current * 1.2f).toInt().coerceAtMost(max)
+            else -> current
+        }
+        if (next == current) return null
+        previous = current; current = next; lastChange = nowMs; slowFrames = 0
+        if (next > previous) clearSince = nowMs
+        return next
+    }
 }

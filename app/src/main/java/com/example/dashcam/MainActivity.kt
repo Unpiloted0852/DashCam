@@ -214,7 +214,11 @@ class MainActivity : AppCompatActivity() {
             liveW = w; liveH = h; layoutLive()
         }) { delayMs ->
             // How old the picture is (capture on the remote to decoded here; the screen adds a frame or two).
-            if (liveOpen) findViewById<TextView>(R.id.liveLabel).text = "$liveTitle · delay ≈ $delayMs ms"
+            if (liveOpen) {
+                val mhz = service?.liveAnswer?.optInt("freq") ?: 0
+                val band = when { mhz >= 5000 -> " · 5 GHz"; mhz > 0 -> " · ⚠ 2.4 GHz (slow band)"; else -> "" }
+                findViewById<TextView>(R.id.liveLabel).text = "$liveTitle$band · delay ≈ $delayMs ms"
+            }
         }
         updateLive()
     }
