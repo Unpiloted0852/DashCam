@@ -59,6 +59,39 @@ class GforceTest {
         assertEquals(0f, run(25f, sensor = { 1f }, speed = { 25f }), 0.02f)
     }
 
+    /**
+     * A realistic stop: 6 s braking at −3 m/s² to a standstill, 4 s stopped, then pulling away at
+     * +2 m/s². Like the phone's own gravity estimate, the sensor slowly "absorbs" any sustained push
+     * (it reads the true value minus a 3 s average of it), and GPS speed arrives 1 s late.
+     */
+    private fun stopAndGo(b: Gforce.Blend, until: Float): Float {
+        val truth = { t: Float -> when { t < 6f -> -3f; t < 10f -> 0f; else -> 2f } }
+        val spd = { t: Float -> when { t < 0f -> 18f; t < 6f -> 18f - 3f * t; t < 10f -> 0f; else -> 2f * (t - 10f) } }
+        var absorbed = 0f
+        var out = 0f
+        var i = 0
+        while (i * 0.02f < until) {
+            val t = i * 0.02f
+            val a = truth(t)
+            absorbed += (a - absorbed) * (0.02f / 3f)
+            val fixT = kotlin.math.floor(t)
+            out = b.step(a - absorbed, (t * 1e9f).toLong() + 1, spd(fixT - 1f), (fixT * 1e9f).toLong() + 1)
+            i++
+        }
+        return out
+    }
+
+    @Test fun readsZeroWhenStopped() {
+        val out = stopAndGo(Gforce.Blend(), 9.9f)
+        assertEquals(0f, out, 0.3f)
+    }
+
+    @Test fun showsPullingAwayAtOnce() {
+        // Half a second after pulling away from the stop the bar must already show speeding up.
+        val out = stopAndGo(Gforce.Blend(), 10.5f)
+        assertTrue("got $out", out > 1.2f)
+    }
+
     @Test fun worksWithoutGps() {
         assertEquals(2f, run(3f, gps = false, sensor = { 2f }, speed = { 0f }), 0.1f)
     }

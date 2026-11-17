@@ -120,21 +120,31 @@ object Gforce : SensorEventListener {
     /** The sensor/GPS blend; plain arithmetic so it can be unit-tested. All values in m/s². */
     internal class Blend {
         private var lastNs = 0L
-        private var sensLp = 0f          // slow average of the sensor reading (its drift and tilt error)
         private var gpsAcc = 0f          // latest change of GPS speed per second
-        private var gpsLp = 0f
         private var gpsQuick = 0f        // GPS alone, lightly smoothed (when the sensors can't be used)
         private var lastFixNs = 0L
         private var lastSpeed = 0f
         private var haveGps = false
-        private var offset = 0f          // sensor drift as last seen while GPS was available
+        private var stillSinceNs = 0L    // time of the first of the current run of "stopped" fixes
+        /** Sensor readings of the last [GPS_LAG_S], so they can be compared with GPS, which arrives that late. */
+        private val history = ArrayDeque<Pair<Long, Float>>()
+        private var lagged: Float? = null
+        private var offset = 0f          // the sensor's error (drift, tilt, absorbed push): sensor − truth
         private var out = 0f
 
-        fun reset() { lastNs = 0; sensLp = 0f; gpsAcc = 0f; gpsLp = 0f; gpsQuick = 0f; lastFixNs = 0; haveGps = false; offset = 0f; out = 0f }
+        fun reset() {
+            lastNs = 0; gpsAcc = 0f; gpsQuick = 0f; lastFixNs = 0; haveGps = false; stillSinceNs = 0
+            history.clear(); lagged = null; offset = 0f; out = 0f
+        }
 
         /**
          * [sensor]: forward acceleration from the motion sensors (null = unusable right now);
          * [speed]/[fixNs]: latest GPS speed (m/s) and its time. Returns the value to show.
+         *
+         * Shown: the sensor reading minus its error. The error is learned slowly by comparing the
+         * sensor with the change in GPS speed, both on GPS's (late) timeline, so the late GPS doesn't
+         * bend quick changes; while GPS says the car is standing still the true value is known to be
+         * zero, and the error is learned within about a second (so pulling away starts from a true zero).
          */
         fun step(sensor: Float?, tNs: Long, speed: Float?, fixNs: Long): Float {
             val dt = if (lastNs == 0L) 0.02f else ((tNs - lastNs) / 1e9f).coerceIn(0.001f, 0.5f)
@@ -144,23 +154,32 @@ object Gforce : SensorEventListener {
                     val span = (fixNs - lastFixNs) / 1e9f
                     if (span in 0.2f..3f) { gpsAcc = (speed - lastSpeed) / span; haveGps = true } else haveGps = false
                 }
+                stillSinceNs = if (speed >= STILL_MPS) 0L else if (stillSinceNs == 0L) fixNs else stillSinceNs
                 lastFixNs = fixNs; lastSpeed = speed
             }
             val gpsFresh = haveGps && speed != null && tNs - fixNs < 2_500_000_000L
-            if (!gpsFresh) { haveGps = false; gpsAcc = 0f }
-            // The slow part (from GPS) and the quick part (from the sensors) use the same time
-            // constant, so together they add up to the true value.
-            gpsLp += (gpsAcc - gpsLp) * (dt / CROSS_TAU).coerceAtMost(1f)
+            if (!gpsFresh) { haveGps = false; gpsAcc = 0f; stillSinceNs = 0L }
             gpsQuick += (gpsAcc - gpsQuick) * (dt / GPS_TAU).coerceAtMost(1f)
+            // Stopped: two GPS fixes in a row (about a second) say so.
+            val still = gpsFresh && stillSinceNs != 0L && fixNs - stillSinceNs >= 900_000_000L
 
-            val target = when {
-                sensor == null -> if (gpsFresh) gpsQuick else 0f
-                gpsFresh -> {
-                    sensLp += (sensor - sensLp) * (dt / CROSS_TAU).coerceAtMost(1f)
-                    offset = sensLp - gpsLp
-                    gpsLp + (sensor - sensLp)
+            if (sensor != null) history.addLast(tNs to sensor)
+            val cut = tNs - (GPS_LAG_S * 1e9f).toLong()
+            while (history.isNotEmpty() && history.first().first <= cut) lagged = history.removeFirst().second
+
+            val target = if (sensor == null) {
+                if (gpsFresh) gpsQuick else 0f
+            } else {
+                val old = lagged
+                if (still) {
+                    // Standing still: whatever the sensor reads now is its error, unless it just jumped
+                    // (pulling away, which GPS reports only a second or two later).
+                    if (abs(sensor - offset) < STILL_JUMP)
+                        offset += (sensor - offset) * (dt / STILL_TAU).coerceAtMost(1f)
+                } else if (gpsFresh && old != null) {
+                    offset += ((old - gpsAcc) - offset) * (dt / CROSS_TAU).coerceAtMost(1f)
                 }
-                else -> sensor - offset
+                sensor - offset   // without GPS: the error as last learned
             }
             out += (target - out) * (dt / SHOW_TAU).coerceAtMost(1f)
             return if (abs(out) < DEADBAND) 0f else out
@@ -168,6 +187,10 @@ object Gforce : SensorEventListener {
 
         companion object {
             const val CROSS_TAU = 4.0f     // s: slower than this comes from GPS, quicker from the sensors
+            const val STILL_TAU = 0.4f     // s: standing still, the sensor's error is learned this fast
+            const val STILL_MPS = 0.3f     // GPS speed below this = standing still
+            const val STILL_JUMP = 1.0f    // m/s² (~0.1 g): a sudden change this big while "still" is a real push
+            const val GPS_LAG_S = 1.0f     // s: how late a change of GPS speed shows up
             const val GPS_TAU = 0.6f
             const val SHOW_TAU = 0.12f
             const val DEADBAND = 0.15f     // m/s² (~0.015 g): hides idle vibration
