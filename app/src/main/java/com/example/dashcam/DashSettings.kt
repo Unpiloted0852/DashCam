@@ -29,6 +29,8 @@ class DashSettings(ctx: Context) {
     /** ...and the same button floating over other apps (navigation) when DashCam isn't in front. */
     val backupOverlay: Boolean get() = bool("backup_overlay", true)
     val backupReturnKmh: Int get() = str("backup_return_kmh", "15").toIntOrNull() ?: 15
+    /** The Backup Cam buttons show at or below the same speed (10 km/h when the view never closes by itself). */
+    val backupShowKmh: Int get() = backupReturnKmh.takeIf { it > 0 } ?: 10
 
     /** default / electronic / optical / off, per camera. */
     val mainStabilization: String get() = str("main_stabilization", "default")

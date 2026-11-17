@@ -141,7 +141,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         override fun run() {
             val kmh = Telemetry.speedMps()?.let { Telemetry.kph(it) }
             backupOverlay?.update(settings.backupButton && settings.backupOverlay && remoteCamReady &&
-                (kmh == null || kmh <= MainActivity.BACKUP_SHOW_KMH))
+                (kmh == null || kmh <= settings.backupShowKmh))
             ui.postDelayed(this, 500)
         }
     }

@@ -465,8 +465,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     companion object {
-        /** The Backup Cam button shows at or below this speed. */
-        const val BACKUP_SHOW_KMH = 10f
         /** Opened by the Backup Cam button floating over another app: show the backup view, then go back there. */
         const val EXTRA_BACKUP_OVERLAY = "backup_overlay"
     }
@@ -486,7 +484,7 @@ class MainActivity : AppCompatActivity() {
         val btn = findViewById<Button>(R.id.backupBtn)
         val kmh = mps?.let { Telemetry.kph(it) }
         val show = settings.backupButton && service?.remoteCamReady == true && !liveOpen &&
-            (kmh == null || kmh <= BACKUP_SHOW_KMH)
+            (kmh == null || kmh <= settings.backupShowKmh)
         btn.visibility = if (show) View.VISIBLE else View.GONE
         val limit = settings.backupReturnKmh
         if (liveOpen && liveForBackup && limit > 0 && kmh != null && kmh > limit) {

@@ -13,15 +13,15 @@
         <Preference app:key="remote_update_setup" app:title="Hands-free updates"
             app:summary="" />
         <SwitchPreferenceCompat app:key="backup_button" app:title="Backup Cam button"
-            app:summary="On the main phone: a big button showing the remote camera full screen, while stopped or below 10 km/h (6 mph)"
+            app:summary="On the main phone: a big button showing the remote camera full screen, while stopped or slow (speed below)"
             app:defaultValue="true" />
         <SwitchPreferenceCompat app:key="backup_overlay" app:title="Backup Cam button over other apps"
             app:dependency="backup_button"
             app:defaultValue="true" />
-        <ListPreference app:key="backup_return_kmh" app:title="Leave Backup Cam view when driving above"
+        <ListPreference app:key="backup_return_kmh" app:title="Backup Cam speed"
             app:dependency="backup_button"
             app:entries="@array/backup_return_labels" app:entryValues="@array/backup_return_values"
-            app:defaultValue="15" app:useSimpleSummaryProvider="true" />
+            app:defaultValue="15" />
         <Preference app:key="link_help" app:selectable="false" app:title="How it works"
             app:summary="Pair the two phones once in Android's Bluetooth settings, then pick each other here. Both phones record their own clips (nothing is lost if the link drops); the main phone starts and stops the remote, locks clips on both, and gives it the time, GPS and weather for its stamp. Open DashCam once on the remote after switching it on; it can then sit with the screen off." />
     </PreferenceCategory>

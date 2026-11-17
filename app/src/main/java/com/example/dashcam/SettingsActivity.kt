@@ -103,6 +103,11 @@ class SettingsActivity : AppCompatActivity() {
                 Preference.SummaryProvider<ListPreference> { p ->
                     if (p.value == "0") "Off" else "${p.entry} at walking pace or slower — backup for the signals above"
                 }
+            findPreference<ListPreference>("backup_return_kmh")?.summaryProvider =
+                Preference.SummaryProvider<ListPreference> { p ->
+                    if (p.value == "0") "Button shows at or below 10 km/h (6 mph); the Backup Cam view stays until closed"
+                    else "Button shows at or below ${p.entry}; the Backup Cam view closes when driving faster"
+                }
             findPreference<SwitchPreferenceCompat>("auto_stop_walk")?.setOnPreferenceChangeListener { _, on ->
                 if (on == true && !granted(Manifest.permission.ACTIVITY_RECOGNITION)) {
                     activityPerm.launch(Manifest.permission.ACTIVITY_RECOGNITION)

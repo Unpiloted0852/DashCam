@@ -79,7 +79,7 @@
         <item>linear</item>
     </string-array>
     <string-array name="backup_return_labels">
-        <item>Never — stay until closed</item>
+        <item>Never leave — show below 10 km/h (6 mph), stay until closed</item>
         <item>10 km/h (6 mph)</item>
         <item>15 km/h (9 mph)</item>
         <item>20 km/h (12 mph)</item>
