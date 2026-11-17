@@ -15,6 +15,9 @@
         <SwitchPreferenceCompat app:key="backup_button" app:title="Backup Cam button"
             app:summary="On the main phone: a big button showing the remote camera full screen, while stopped or below 10 km/h (6 mph)"
             app:defaultValue="true" />
+        <SwitchPreferenceCompat app:key="backup_overlay" app:title="Backup Cam button over other apps"
+            app:dependency="backup_button"
+            app:defaultValue="true" />
         <ListPreference app:key="backup_return_kmh" app:title="Leave Backup Cam view when driving above"
             app:dependency="backup_button"
             app:entries="@array/backup_return_labels" app:entryValues="@array/backup_return_values"

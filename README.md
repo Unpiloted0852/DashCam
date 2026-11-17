@@ -88,6 +88,10 @@ Android dashcam that records the road (main/rear-facing camera) and the cabin/re
     linked the remote keeps a private group up and the main phone stays joined, so the picture appears
     in about 1.5 s, even with the remote's screen off. Wi‑Fi must be on on both phones (no network
     needed); both ask once for "Nearby devices". The very first join takes ~20 s.
+  - **Backup Cam:** while stopped or below 10 km/h (6 mph) a big amber button opens the live view;
+    it closes again once you drive off (speed set in Settings). With another app in front (navigation),
+    the same button floats over that app; the Backup Cam view then hands the screen back to it when
+    you drive off or close it. Drag the floating button to move it. Needs "Display over other apps".
   - **Remote clips:** the Clips screen shows a third thumbnail for the remote's clip and lists clips
     that are only on the remote. Tap one (or Select → ⋮ → Download from remote) to copy it in full
     quality to the main phone (resumable; ~2.5 MB/s on a 2.4 GHz Wi‑Fi Direct link). The player

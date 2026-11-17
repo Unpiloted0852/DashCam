@@ -119,6 +119,11 @@ class SettingsActivity : AppCompatActivity() {
                 summary = "Installed: v${BuildConfig.VERSION_NAME} · github.com/${BuildConfig.UPDATE_REPO}"
                 setOnPreferenceClickListener { Updater.checkNow(requireActivity()); true }
             }
+            // Without the permission, the first tap opens Android's page for it instead of turning the switch off.
+            findPreference<SwitchPreferenceCompat>("backup_overlay")?.setOnPreferenceChangeListener { _, on ->
+                if (android.provider.Settings.canDrawOverlays(requireContext())) return@setOnPreferenceChangeListener true
+                if (on == true || !askedOverlay) { askedOverlay = true; askOverlay(); on == true } else true
+            }
             findPreference<Preference>("baro_calibrate")?.setOnPreferenceClickListener { calibrateDialog(); true }
             findPreference<Preference>("remote_update_setup")?.setOnPreferenceClickListener {
                 val ctx = requireContext()
@@ -166,6 +171,7 @@ class SettingsActivity : AppCompatActivity() {
             findPreference<Preference>("remote_update_setup")?.isVisible = role == "remote"
             findPreference<Preference>("backup_button")?.isVisible = role == "primary"
             findPreference<Preference>("backup_return_kmh")?.isVisible = role == "primary"
+            findPreference<Preference>("backup_overlay")?.isVisible = role == "primary"
             // A remote camera records one camera and takes its stamp/clip settings from the main phone.
             findPreference<Preference>("cabin_enabled")?.isEnabled = role != "remote"
             findPreference<Preference>("cabin_enabled")?.summary = if (role == "remote")
@@ -255,8 +261,23 @@ class SettingsActivity : AppCompatActivity() {
                 .show()
         }
 
+        private var askedOverlay = false
+
+        /** Android's "Display over other apps" page for DashCam. */
+        private fun askOverlay() {
+            startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
+                android.net.Uri.parse("package:${requireContext().packageName}")))
+        }
+
         override fun onResume() {
             super.onResume()
+            findPreference<SwitchPreferenceCompat>("backup_overlay")?.let { pref ->
+                val allowed = android.provider.Settings.canDrawOverlays(requireContext())
+                pref.summary = if (allowed || !pref.isChecked)
+                    "While driving with another app in front (navigation), the Backup Cam button floats over it when slow; " +
+                        "the Backup Cam view returns to that app when you drive off. Drag the button to move it."
+                else "⚠ Needs \"Display over other apps\": tap, then allow DashCam"
+            }
             barometer()?.let { sensors?.registerListener(baroListener, it, android.hardware.SensorManager.SENSOR_DELAY_NORMAL) }
             updateCalibrationSummary()
             findPreference<Preference>("remote_update_setup")?.summary = run {

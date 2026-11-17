@@ -26,6 +26,8 @@ class DashSettings(ctx: Context) {
     /** Main phone with a remote camera: big Backup Cam button when slow or stopped. */
     val backupButton: Boolean get() = bool("backup_button", true)
     /** Backup Cam view goes back to normal above this speed (km/h); 0 = stays until closed. */
+    /** ...and the same button floating over other apps (navigation) when DashCam isn't in front. */
+    val backupOverlay: Boolean get() = bool("backup_overlay", true)
     val backupReturnKmh: Int get() = str("backup_return_kmh", "15").toIntOrNull() ?: 15
 
     /** default / electronic / optical / off, per camera. */

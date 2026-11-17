@@ -71,6 +71,7 @@ class MainActivity : AppCompatActivity() {
         setContentView(R.layout.activity_main)
         // Reopened by itself after an update (a remote camera nobody is touching): come up over the
         // lock screen and wake the display, or the cameras wouldn't be allowed to start.
+        takeOverlayIntent(intent)
         if (intent?.getBooleanExtra(Updater.EXTRA_AFTER_UPDATE, false) == true && Build.VERSION.SDK_INT >= 27) {
             setShowWhenLocked(true); setTurnScreenOn(true)
         }
@@ -192,10 +193,14 @@ class MainActivity : AppCompatActivity() {
 
     /** The live view was opened with the Backup Cam button (so it may close itself when driving off). */
     private var liveForBackup = false
+    /** Opened from the floating Backup Cam button: open the backup view, and go back to the other app when it closes. */
+    private var backupFromOverlay = false
+    private var returnWhenClosed = false
     private var liveTitle = "REMOTE CAMERA · LIVE"
     private var fastSince = 0L
 
     private fun openLive(backup: Boolean = false) {
+        returnWhenClosed = false
         val s = service ?: return
         if (!s.linkConnected) { Toast.makeText(this, "The remote camera isn't connected", Toast.LENGTH_SHORT).show(); return }
         LiveLink.problem(this)?.let { p ->
@@ -271,11 +276,34 @@ class MainActivity : AppCompatActivity() {
     private fun closeLive() {
         if (!liveOpen) return
         liveOpen = false
+        // Came here from the button floating over another app: hand the screen back to that app.
+        if (returnWhenClosed) { returnWhenClosed = false; if (!isFinishing) moveTaskToBack(true) }
         liveBack.isEnabled = false
         ticker.removeCallbacks(liveKeepAlive); ticker.removeCallbacks(liveNoAnswer)
         liveViewer?.close(); liveViewer = null
         service?.let { it.liveListener = null; it.requestLive(false) }
         liveBox.visibility = View.GONE
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        takeOverlayIntent(intent)
+        openBackupFromOverlay()
+    }
+
+    private fun takeOverlayIntent(i: Intent?) {
+        if (i?.getBooleanExtra(EXTRA_BACKUP_OVERLAY, false) != true) return
+        i.removeExtra(EXTRA_BACKUP_OVERLAY)
+        backupFromOverlay = true
+        inOwnScreen = true   // just a quick look: not an "app opened" that starts recording
+    }
+
+    private fun openBackupFromOverlay() {
+        if (!backupFromOverlay || service == null) return
+        backupFromOverlay = false
+        if (!liveOpen) openLive(backup = true)
+        if (liveOpen && liveForBackup) returnWhenClosed = true
     }
 
     override fun onStart() {
@@ -408,6 +436,7 @@ class MainActivity : AppCompatActivity() {
             attachPreview(CameraPipeline.Role.CABIN, cabinPreview)
             if (autoRecordPending && !s.recording) s.startRecording()
             autoRecordPending = false
+            openBackupFromOverlay()
             // A remote camera sits with the screen off for hours: ask once to be spared battery limits.
             if (settings.isRemote) BatteryHelper.requestOnce(this@MainActivity)
             Updater.checkInBackground(this@MainActivity) { service?.recording == true || autoRecordPending }
@@ -435,9 +464,11 @@ class MainActivity : AppCompatActivity() {
         override fun onSurfaceTextureUpdated(st: SurfaceTexture) {}
     }
 
-    private companion object {
+    companion object {
         /** The Backup Cam button shows at or below this speed. */
         const val BACKUP_SHOW_KMH = 10f
+        /** Opened by the Backup Cam button floating over another app: show the backup view, then go back there. */
+        const val EXTRA_BACKUP_OVERLAY = "backup_overlay"
     }
 
     private val tick = object : Runnable {

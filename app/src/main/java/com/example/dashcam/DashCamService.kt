@@ -128,6 +128,22 @@ class DashCamService : Service(), CameraPipeline.Listener,
         getSystemService(CameraManager::class.java).registerAvailabilityCallback(availability, ui)
         startCameras()
         startLink()
+        backupOverlay = BackupOverlay(this)
+        ui.post(overlayTick)
+    }
+
+    // ------------------------------------------------------------------ Backup Cam over other apps
+
+    private var backupOverlay: BackupOverlay? = null
+
+    /** Main phone: float the Backup Cam button over other apps while a remote camera is ready and the car is slow. */
+    private val overlayTick = object : Runnable {
+        override fun run() {
+            val kmh = Telemetry.speedMps()?.let { Telemetry.kph(it) }
+            backupOverlay?.update(settings.backupButton && settings.backupOverlay && remoteCamReady &&
+                (kmh == null || kmh <= MainActivity.BACKUP_SHOW_KMH))
+            ui.postDelayed(this, 500)
+        }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -156,6 +172,8 @@ class DashCamService : Service(), CameraPipeline.Listener,
         getSystemService(PowerManager::class.java).removeThermalStatusListener(thermalListener)
         Updater.beforeInstall = null
         ui.removeCallbacks(retry)
+        ui.removeCallbacks(overlayTick)
+        backupOverlay?.remove(); backupOverlay = null
         stopLive("app closed")
         dlExec.shutdownNow()
         stopLink()
