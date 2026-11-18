@@ -162,8 +162,12 @@ class MainActivity : AppCompatActivity() {
             if (s == null || !s.remoteOutdated) return@setOnLongClickListener false
             androidx.appcompat.app.AlertDialog.Builder(this)
                 .setTitle("Update the remote camera now?")
-                .setMessage("This phone sends its DashCam (v${BuildConfig.VERSION_NAME}) to the remote camera, which installs it and reopens. " +
-                    "The remote stops recording for about 20 seconds.")
+                .setMessage(if (s.remoteCanReopen)
+                    "This phone sends its DashCam (v${BuildConfig.VERSION_NAME}) to the remote camera, which installs it and reopens. " +
+                        "The remote stops recording for about 20 seconds."
+                else "This phone sends its DashCam (v${BuildConfig.VERSION_NAME}) to the remote camera, which installs it. " +
+                    "The remote can't reopen itself yet, so DashCam must then be opened on it by hand. To make it reopen by itself, " +
+                    "on the remote: Settings → Remote camera → Hands-free updates.")
                 .setPositiveButton("Update now") { _, _ -> s.maybeUpdateRemote(manual = true) }
                 .setNegativeButton("Later", null).show()
             true

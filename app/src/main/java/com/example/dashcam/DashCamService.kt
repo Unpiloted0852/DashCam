@@ -892,6 +892,8 @@ class DashCamService : Service(), CameraPipeline.Listener,
         ?.detail?.removePrefix("v")?.takeIf { it.isNotEmpty() && it != "?" }
 
     /** Main phone: the linked remote camera runs an older DashCam than this phone. */
+    /** Main phone: false if the remote camera reported it can't put itself back on screen after an update. */
+    val remoteCanReopen: Boolean get() = peerStatus?.let { !it.has("ovl") || it.optBoolean("ovl") } ?: true
     val remoteOutdated: Boolean get() = BuildConfig.UPDATES_ENABLED && settings.isPrimary &&
         peerVersion()?.let { Updater.isNewer(BuildConfig.VERSION_NAME, it) } == true
 
@@ -913,6 +915,10 @@ class DashCamService : Service(), CameraPipeline.Listener,
             applicationInfo.splitSourceDirs?.isNotEmpty() == true || !apk.canRead() -> "⚠ This phone's DashCam can't be copied to the remote — update the remote by hand"
             p != null && p.has("inst") && !p.optBoolean("inst") ->
                 "⚠ Remote camera has v$peer and can't take updates yet — on the remote: Settings → Remote camera → Hands-free updates"
+            // Without "display over other apps" the remote would stay closed after the update (not recording).
+            !manual && p != null && p.has("ovl") && !p.optBoolean("ovl") ->
+                "⚠ Remote camera has v$peer but couldn't reopen itself after an update — on the remote: " +
+                    "Settings → Remote camera → Hands-free updates (or hold here to update it anyway)"
             addr == null || token.isNullOrEmpty() -> waiting + "once the Wi‑Fi link is up"
             !manual && (recording || stopping || p == null || p.optBoolean("rec")) -> waiting + "when neither phone is recording (hold here to do it now)"
             !manual && remoteUpdateTriedFor == peer && now0() - remoteUpdateTriedAt < 30 * 60_000 -> remoteUpdateNote ?: (waiting + "(hold here to try again)")
