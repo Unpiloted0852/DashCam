@@ -75,12 +75,24 @@ class DashCamService : Service(), CameraPipeline.Listener,
         set(v) {
             if (v == field) return
             field = v
-            // A remote camera is stuck to a window: turning its screen off or on (or bumping it) must not
-            // split the recording into new clips, so it keeps the shape it started with until it stops.
-            if (settings.isRemote && (recording || stopping)) return
-            mainCam?.displayRotation = v; cabinCam?.displayRotation = v
-            if (recording) { ui.removeCallbacks(followRotation); ui.postDelayed(followRotation, 800) }
+            applyRotation(chosen = false)
         }
+
+    /** The cameras' rotation: the one the main phone chose for this remote camera, or the screen's. */
+    private val rotationDeg: Int get() = settings.forcedRotationDeg ?: displayRotationDeg
+
+    /** [chosen]: the orientation was picked on the main phone, so it applies even mid-recording. */
+    private fun applyRotation(chosen: Boolean) {
+        val r = rotationDeg
+        val cams = listOfNotNull(mainCam, cabinCam)
+        if (cams.all { it.displayRotation == r }) return
+        // A remote camera is stuck to a window: turning its screen off or on (or bumping it) must not
+        // split the recording into new clips, so it keeps the shape it started with until it stops.
+        if (!chosen && settings.isRemote && (recording || stopping)) return
+        cams.forEach { it.displayRotation = r }
+        if (recording) { ui.removeCallbacks(followRotation); ui.postDelayed(followRotation, 800) }
+        if (chosen && liveVideo) restartLiveVideo()
+    }
 
     /**
      * The phone was turned while recording. Portrait <-> landscape: both cameras finish their clip
@@ -218,7 +230,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         cabinOpenFailures = 0
         if (backId != null) {
             mainCam = CameraPipeline(this, CameraPipeline.Role.MAIN, backId, settings.mainSize, this, zoom).also {
-                configure(it); it.start(); previewMain?.let { p -> it.setPreview(p.surface, p.w, p.h) }
+                configure(it); it.displayRotation = rotationDeg; it.start(); previewMain?.let { p -> it.setPreview(p.surface, p.w, p.h) }
             }
         } else {
             warning = "No rear-facing camera found"
@@ -235,7 +247,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
             mgr.getCameraCharacteristics(it).get(CameraCharacteristics.LENS_FACING) == CameraCharacteristics.LENS_FACING_FRONT
         } ?: return
         cabinCam = CameraPipeline(this, CameraPipeline.Role.CABIN, frontId, settings.cabinSize, this).also {
-            configure(it); it.start(); previewCabin?.let { p -> it.setPreview(p.surface, p.w, p.h) }
+            configure(it); it.displayRotation = rotationDeg; it.start(); previewCabin?.let { p -> it.setPreview(p.surface, p.w, p.h) }
             EventLog.log("Cam", "rear camera $frontId starting (concurrent pair listed: $concurrentSupported)")
             // Recording may already be running (auto-start, or the rear camera came back later):
             // the rear camera joins it instead of being left out of the whole drive.
@@ -263,7 +275,6 @@ class DashCamService : Service(), CameraPipeline.Listener,
         p.stabilization = if (main) settings.mainStabilization else settings.cabinStabilization
         p.mirror = !main && settings.cabinMirror
         p.rotate180 = if (main) settings.mainRotate180 else settings.cabinRotate180
-        p.displayRotation = displayRotationDeg
         p.overlayOptions = settings.overlayOptions(if (settings.isRemote) REMOTE_LABEL else p.role.label)
     }
 
@@ -485,7 +496,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
             cams.forEach { it.stopRecording() }
             ui.post {
                 stopping = false
-                listOfNotNull(mainCam, cabinCam).forEach { it.displayRotation = displayRotationDeg }
+                listOfNotNull(mainCam, cabinCam).forEach { it.displayRotation = rotationDeg }
                 releaseWakeLock()
                 goForeground()
                 if (!bound && settings.isRemote) { pendingRestart = false; enterIdle(); changed(); return@post }
@@ -604,6 +615,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
     override fun onSharedPreferenceChanged(prefs: SharedPreferences?, key: String?) {
         key ?: return
         if (key in DashSettings.LINK_KEYS) restartLink()
+        if (key == "remote_orientation" || key == "link_role") ui.post { applyRotation(chosen = true) }
         if (settings.isPrimary && key in DashSettings.MIRRORED_KEYS) link?.send("settings", settings.mirroredJson())
         if (key in DashSettings.RESTART_KEYS) {
             if (recording || stopping) pendingRestart = true else restartCameras()
@@ -1095,6 +1107,12 @@ class DashCamService : Service(), CameraPipeline.Listener,
         exitIdle()
         mainCam?.let { c -> worker.execute { c.startLive(srv) } }
         changed()
+    }
+
+    /** Remote: the picture turned while the main phone watches: a new live stream in the new shape. */
+    private fun restartLiveVideo() {
+        val srv = liveServer ?: return
+        mainCam?.let { c -> worker.execute { c.stopLive(); c.startLive(srv) } }
     }
 
     /** Remote: nobody is watching any more; the group stays up for next time. */

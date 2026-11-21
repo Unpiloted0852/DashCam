@@ -64,6 +64,15 @@ class DashSettings(ctx: Context) {
     val linkDevice: String get() = str("link_device", "")
     /** Remote camera: "back" (uses the Lens setting) or "selfie". */
     val remoteCamera: String get() = str("remote_camera", "back")
+    /** Set on the main phone, mirrored: "auto" (the remote follows its own screen), "landscape", "landscape_rev" or "portrait". */
+    val remoteOrientation: String get() = str("remote_orientation", "auto")
+    /** Remote camera: the fixed rotation (degrees, as Display.getRotation) the main phone chose, or null to follow the screen. */
+    val forcedRotationDeg: Int? get() = if (!isRemote) null else when (remoteOrientation) {
+        "landscape" -> 90
+        "landscape_rev" -> 270
+        "portrait" -> 0
+        else -> null
+    }
 
     /** Mirrored main phone -> remote camera (settings that don't depend on how a phone is mounted). */
     fun mirroredJson(): org.json.JSONObject {
@@ -158,7 +167,7 @@ class DashSettings(ctx: Context) {
             "auto_stop_walk", "auto_stop_unplug", "auto_stop_minutes",
             "stamp_size", "stamp_clock", "use_utc", "overlay_label", "show_coords", "stamp_accuracy", "stamp_place",
             "stamp_speed", "stamp_heading", "stamp_altitude", "stamp_alt_unit", "stamp_sats", "stamp_accel", "accel_height", "accel_scale", "stamp_weather",
-            "stamp_weather_fields", "stamp_temp_unit", "stamp_zone")
+            "stamp_weather_fields", "stamp_temp_unit", "stamp_zone", "remote_orientation")
     }
 }
 

@@ -12,6 +12,9 @@
             app:defaultValue="back" app:useSimpleSummaryProvider="true" />
         <Preference app:key="remote_update_setup" app:title="Hands-free updates"
             app:summary="" />
+        <ListPreference app:key="remote_orientation" app:title="Remote camera orientation"
+            app:entries="@array/remote_orientation_labels" app:entryValues="@array/remote_orientation_values"
+            app:defaultValue="auto" app:useSimpleSummaryProvider="true" />
         <SwitchPreferenceCompat app:key="backup_button" app:title="Backup Cam button"
             app:summary="On the main phone: a big button showing the remote camera full screen, while stopped or slow (speed below)"
             app:defaultValue="true" />

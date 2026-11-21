@@ -553,8 +553,15 @@ class MainActivity : AppCompatActivity() {
         val previewAlpha = if (s?.isIdle == true) 0f else 1f
         mainPreview.alpha = previewAlpha; cabinPreview.alpha = previewAlpha
         val rec = s?.recording == true
-        // Recording follows the phone's orientation (a turn starts a new clip), so never lock it.
-        requestedOrientation = ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+        // Recording follows the phone's orientation (a turn starts a new clip), so never lock it,
+        // unless the main phone chose a fixed orientation for this remote camera.
+        val want = when (settings.forcedRotationDeg) {
+            90 -> ActivityInfo.SCREEN_ORIENTATION_LANDSCAPE
+            270 -> ActivityInfo.SCREEN_ORIENTATION_REVERSE_LANDSCAPE
+            0 -> ActivityInfo.SCREEN_ORIENTATION_PORTRAIT
+            else -> ActivityInfo.SCREEN_ORIENTATION_FULL_USER
+        }
+        if (requestedOrientation != want) requestedOrientation = want
         recBtn.setBackgroundResource(if (rec) R.drawable.stop_button else R.drawable.rec_button)
         findViewById<Button>(R.id.liveBtn).visibility = if (settings.isPrimary) View.VISIBLE else View.GONE
         recBtn.isEnabled = s != null && !s.stopping

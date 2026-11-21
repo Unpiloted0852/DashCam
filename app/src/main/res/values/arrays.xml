@@ -3,6 +3,8 @@
     <string-array name="link_role_values"><item>normal</item><item>primary</item><item>remote</item></string-array>
     <string-array name="remote_camera_labels"><item>Back camera (uses the Lens setting)</item><item>Selfie camera</item></string-array>
     <string-array name="remote_camera_values"><item>back</item><item>selfie</item></string-array>
+    <string-array name="remote_orientation_labels"><item>Follow the remote phone (its auto-rotate)</item><item>Landscape</item><item>Landscape, turned the other way</item><item>Portrait</item></string-array>
+    <string-array name="remote_orientation_values"><item>auto</item><item>landscape</item><item>landscape_rev</item><item>portrait</item></string-array>
     <string-array name="segment_labels"><item>1 minute</item><item>2 minutes</item><item>3 minutes</item><item>5 minutes</item><item>10 minutes</item></string-array>
     <string-array name="segment_values"><item>1</item><item>2</item><item>3</item><item>5</item><item>10</item></string-array>
     <string-array name="storage_labels"><item>2 GB</item><item>4 GB</item><item>8 GB</item><item>16 GB</item><item>32 GB</item><item>64 GB</item><item>128 GB</item></string-array>

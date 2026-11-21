@@ -177,6 +177,7 @@ class SettingsActivity : AppCompatActivity() {
             findPreference<Preference>("backup_button")?.isVisible = role == "primary"
             findPreference<Preference>("backup_return_kmh")?.isVisible = role == "primary"
             findPreference<Preference>("backup_overlay")?.isVisible = role == "primary"
+            findPreference<Preference>("remote_orientation")?.isVisible = role == "primary"
             // A remote camera records one camera and takes its stamp/clip settings from the main phone.
             findPreference<Preference>("cabin_enabled")?.isEnabled = role != "remote"
             findPreference<Preference>("cabin_enabled")?.summary = if (role == "remote")

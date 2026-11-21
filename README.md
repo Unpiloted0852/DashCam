@@ -82,6 +82,9 @@ Android dashcam that records the road (main/rear-facing camera) and the cabin/re
   - Android won't let a camera app start from the background, so open DashCam on the remote once after
     switching it on. It can then sit with the screen off: it turns its cameras and GPS off and waits
     for the main phone. "Turn off" in its notification stops it.
+  - **Orientation:** the remote's video follows its own screen rotation by default. "Remote camera
+    orientation" on the main phone can fix it to landscape (either way round) or portrait, whatever
+    the remote's auto-rotate setting; a change applies at once, also while recording.
   - Both phones must run the same link protocol; otherwise both show "Versions don't match".
   - **Live view:** 📺 on the main phone shows the remote camera full screen (720p, mirrored like a
     rear-view mirror by default; ⇋ Mirror toggles). It runs over Wi‑Fi Direct: while the phones are
