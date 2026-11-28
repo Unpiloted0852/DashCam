@@ -418,6 +418,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         recClock = clock
         recWantAudio = wantAudio
         stopReason = null
+        AutoRotate.onDriveStart(this, settings.autoRotateMode)
         val muxers = ArrayList<SegmentMuxer>()
         val errors = ArrayList<String>()
         for (cam in cams) {
@@ -568,6 +569,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
         toast = "Drive ended ($reason) — recording stopped"
         notifyAutoStopped(reason)
         stopRecording("drive ended: $reason")
+        AutoRotate.onDriveEnd(this, settings.autoRotateMode)
     }
 
     private fun notifyAutoStopped(reason: String) {
@@ -774,6 +776,7 @@ class DashCamService : Service(), CameraPipeline.Listener,
             val why = m.optString("why").ifEmpty { "stopped on the main phone" }
             toast = "Main phone stopped recording ($why)"
             stopRecording("main phone: $why")
+            if (why.startsWith("drive ended")) AutoRotate.onDriveEnd(this, settings.autoRotateMode)
         }
     }
 

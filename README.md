@@ -100,6 +100,10 @@ Android dashcam that records the road (main/rear-facing camera) and the cabin/re
     quality to the main phone (resumable; ~2.5 MB/s on a 2.4 GHz Wi‑Fi Direct link). The player
     shows Front / Rear / Remote / All in sync.
 
+- **Phone auto-rotate (Settings → Advanced):** optionally turn the phone's auto-rotate off when a
+  drive ends, so the screen goes back upright, and on again while recording. Needs "Modify system
+  settings".
+
 - **Updates:** checks this repo's GitHub Releases when the app opens (at most every 6 h, never while
   recording) and offers to download and install the new APK. Also "Check for updates now" in Settings.
 

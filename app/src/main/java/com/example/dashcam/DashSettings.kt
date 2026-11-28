@@ -55,6 +55,8 @@ class DashSettings(ctx: Context) {
     val endBluetoothAddress: String get() = str("auto_stop_bt", "")
     val autoRecord: Boolean get() = bool("auto_record", false)
     val keepScreenOn: Boolean get() = bool("keep_screen_on", true)
+    /** Phone auto-rotate: "leave" alone, "end" (off when a drive ends) or "drive" (on while driving, off after). */
+    val autoRotateMode: String get() = str("auto_rotate_mode", "leave")
 
     /** Remote camera feature: "normal", "primary" (has a remote camera) or "remote" (is one). */
     val linkRole: String get() = str("link_role", "normal")

@@ -186,6 +186,9 @@
     <PreferenceCategory app:title="Advanced">
         <Preference app:key="baro_calibrate" app:title="Calibrate altitude"
             app:summary="Correct the phone's barometer using a known altitude" />
+        <ListPreference app:key="auto_rotate_mode" app:title="Phone auto-rotate"
+            app:entries="@array/auto_rotate_labels" app:entryValues="@array/auto_rotate_values"
+            app:defaultValue="leave" />
     </PreferenceCategory>
 
     <PreferenceCategory app:title="Troubleshooting">

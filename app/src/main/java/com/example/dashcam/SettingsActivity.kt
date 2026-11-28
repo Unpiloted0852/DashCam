@@ -130,6 +130,11 @@ class SettingsActivity : AppCompatActivity() {
                 if (on == true || !askedOverlay) { askedOverlay = true; askOverlay(); on == true } else true
             }
             findPreference<Preference>("baro_calibrate")?.setOnPreferenceClickListener { calibrateDialog(); true }
+            findPreference<ListPreference>("auto_rotate_mode")?.setOnPreferenceChangeListener { _, v ->
+                if (v != "leave" && !AutoRotate.allowed(requireContext())) askWriteSettings()
+                view?.post { updateAutoRotateSummary() }
+                true
+            }
             findPreference<Preference>("remote_update_setup")?.setOnPreferenceClickListener {
                 val ctx = requireContext()
                 val pkg = android.net.Uri.parse("package:${ctx.packageName}")
@@ -275,8 +280,26 @@ class SettingsActivity : AppCompatActivity() {
                 android.net.Uri.parse("package:${requireContext().packageName}")))
         }
 
+        /** Android's "Modify system settings" page for DashCam. */
+        private fun askWriteSettings() {
+            startActivity(android.content.Intent(android.provider.Settings.ACTION_MANAGE_WRITE_SETTINGS,
+                android.net.Uri.parse("package:${requireContext().packageName}")))
+        }
+
+        private fun updateAutoRotateSummary() {
+            val p = findPreference<ListPreference>("auto_rotate_mode") ?: return
+            p.summary = when {
+                p.value == "leave" || p.value == null ->
+                    "Leave it alone. Or: turn it off when a drive ends (screen back upright), and optionally on while recording"
+                !AutoRotate.allowed(requireContext()) ->
+                    "⚠ ${p.entry}: needs \"Modify system settings\" — choose again, then allow DashCam"
+                else -> "${p.entry} (the screen goes back upright)"
+            }
+        }
+
         override fun onResume() {
             super.onResume()
+            updateAutoRotateSummary()
             findPreference<SwitchPreferenceCompat>("backup_overlay")?.let { pref ->
                 val allowed = android.provider.Settings.canDrawOverlays(requireContext())
                 pref.summary = if (allowed || !pref.isChecked)
